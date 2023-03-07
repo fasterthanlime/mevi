@@ -1,4 +1,7 @@
-use std::{os::unix::process::CommandExt, process::Command};
+use std::{
+    os::unix::process::CommandExt,
+    process::{Child, Command},
+};
 
 use humansize::{make_format, BINARY};
 use nix::{
@@ -22,71 +25,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let child = cmd.spawn()?;
-    let pid = Pid::from_raw(child.id() as _);
-    waitpid(pid, None)?;
-
-    let mut anon_ranges: RangeMap<usize, ()> = Default::default();
-
-    loop {
-        syscall_step(pid)?;
-        syscall_step(pid)?;
-        on_sys_exit(pid, &mut anon_ranges)?;
-    }
+    let mut tracee = Tracee::new(child)?;
+    tracee.run()
 }
 
-fn syscall_step(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        ptrace::syscall(pid, None)?;
-
-        match waitpid(pid, None)? {
-            WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
-            WaitStatus::Exited(_, status) => {
-                eprintln!("Child exited with status {status}");
-                std::process::exit(status);
-            }
-            _ => continue,
-        }
-    }
-}
-
-fn on_sys_exit(
+struct Tracee {
     pid: Pid,
-    anon_ranges: &mut RangeMap<usize, ()>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let formatter = make_format(BINARY);
+    anon_ranges: RangeMap<usize, ()>,
+    heap_top: Option<usize>,
+}
 
-    let regs = ptrace::getregs(pid)?;
-    let syscall = regs.orig_rax as i64;
-    let ret = regs.rax as usize;
+impl Tracee {
+    fn new(child: Child) -> Result<Self, Box<dyn std::error::Error>> {
+        let pid = Pid::from_raw(child.id() as _);
+        waitpid(pid, None)?;
 
-    match syscall {
-        libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
-            let len = regs.rsi as usize;
-            eprintln!("{:#x} {} added (mmap)", ret.blue(), formatter(len).green(),);
-            anon_ranges.insert(ret..ret + len, ());
-        }
-        libc::SYS_munmap => {
-            let addr = regs.rdi as usize;
-            let len = regs.rsi as usize;
+        Ok(Self {
+            pid,
+            anon_ranges: Default::default(),
+            heap_top: None,
+        })
+    }
 
-            let total_a = anon_ranges.total();
-            anon_ranges.remove(addr..(addr + len));
-            let total_b = anon_ranges.total();
-
-            if let Some(diff) = total_a.checked_sub(total_b) {
-                eprintln!(
-                    "{:#x} {} removed (munmap)",
-                    addr.blue(),
-                    formatter(diff).red(),
-                );
-            }
-        }
-        _other => {
-            // let's ignore that for now
+    fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        loop {
+            self.syscall_step()?;
+            self.syscall_step()?;
+            self.on_sys_exit()?;
         }
     }
 
-    Ok(())
+    fn syscall_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        loop {
+            ptrace::syscall(self.pid, None)?;
+
+            match waitpid(self.pid, None)? {
+                WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
+                WaitStatus::Exited(_, status) => {
+                    eprintln!("Child exited with status {status}");
+                    std::process::exit(status);
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    fn on_sys_exit(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let formatter = make_format(BINARY);
+
+        let regs = ptrace::getregs(self.pid)?;
+        let syscall = regs.orig_rax as i64;
+        let ret = regs.rax as usize;
+
+        match syscall {
+            libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
+                let len = regs.rsi as usize;
+                eprintln!("{:#x} {} added (mmap)", ret.blue(), formatter(len).green(),);
+                self.anon_ranges.insert(ret..ret + len, ());
+            }
+            libc::SYS_munmap => {
+                let addr = regs.rdi as usize;
+                let len = regs.rsi as usize;
+
+                let total_a = self.anon_ranges.total();
+                self.anon_ranges.remove(addr..(addr + len));
+                let total_b = self.anon_ranges.total();
+
+                if let Some(diff) = total_a.checked_sub(total_b) {
+                    eprintln!(
+                        "{:#x} {} removed (munmap)",
+                        addr.blue(),
+                        formatter(diff).red(),
+                    );
+                }
+            }
+            _other => {
+                // let's ignore that for now
+            }
+        }
+
+        Ok(())
+    }
 }
 
 trait Total {
