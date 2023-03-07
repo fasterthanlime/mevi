@@ -1,5 +1,6 @@
 use std::{os::unix::process::CommandExt, process::Command};
 
+use humansize::{make_format, BINARY};
 use nix::{
     sys::{
         ptrace::{self},
@@ -45,6 +46,8 @@ fn syscall_step(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn on_sys_exit(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
+    let formatter = make_format(BINARY);
+
     let regs = ptrace::getregs(pid)?;
     let syscall = regs.orig_rax as i64;
     let ret = regs.rax as i64;
@@ -52,7 +55,7 @@ fn on_sys_exit(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
     match syscall {
         libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
             let len = regs.rsi as usize;
-            eprintln!("mmap-allocated {} bytes at {:#x}", len, ret);
+            eprintln!("mmap-allocated {} at {:#x}", formatter(len), ret);
         }
         _other => {
             // let's ignore that for now
