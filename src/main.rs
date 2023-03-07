@@ -10,6 +10,7 @@ use nix::{
     unistd::Pid,
 };
 use owo_colors::OwoColorize;
+use rangemap::RangeMap;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("../mem-hog/target/release/mem-hog");
@@ -24,10 +25,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pid = Pid::from_raw(child.id() as _);
     waitpid(pid, None)?;
 
+    let mut anon_ranges: RangeMap<usize, ()> = Default::default();
+
     loop {
         syscall_step(pid)?;
         syscall_step(pid)?;
-        on_sys_exit(pid)?;
+        on_sys_exit(pid, &mut anon_ranges)?;
     }
 }
 
@@ -46,26 +49,37 @@ fn syscall_step(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn on_sys_exit(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
+fn on_sys_exit(
+    pid: Pid,
+    anon_ranges: &mut RangeMap<usize, ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let formatter = make_format(BINARY);
 
     let regs = ptrace::getregs(pid)?;
     let syscall = regs.orig_rax as i64;
-    let ret = regs.rax as i64;
+    let ret = regs.rax as usize;
 
     match syscall {
         libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
             let len = regs.rsi as usize;
             eprintln!("{:#x} {} added (mmap)", ret.blue(), formatter(len).green(),);
+            anon_ranges.insert(ret..ret + len, ());
         }
         libc::SYS_munmap => {
             let addr = regs.rdi as usize;
             let len = regs.rsi as usize;
-            eprintln!(
-                "{:#x} {} removed (munmap)",
-                addr.blue(),
-                formatter(len).red(),
-            );
+
+            let total_a = anon_ranges.total();
+            anon_ranges.remove(addr..(addr + len));
+            let total_b = anon_ranges.total();
+
+            if let Some(diff) = total_a.checked_sub(total_b) {
+                eprintln!(
+                    "{:#x} {} removed (munmap)",
+                    addr.blue(),
+                    formatter(diff).red(),
+                );
+            }
         }
         _other => {
             // let's ignore that for now
@@ -73,4 +87,14 @@ fn on_sys_exit(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+trait Total {
+    fn total(&self) -> usize;
+}
+
+impl<V: Eq + Clone> Total for RangeMap<usize, V> {
+    fn total(&self) -> usize {
+        self.iter().map(|(range, _)| range.end - range.start).sum()
+    }
 }
