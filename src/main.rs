@@ -1,4 +1,5 @@
 use std::{
+    ops::Range,
     os::unix::process::CommandExt,
     process::{Child, Command},
 };
@@ -32,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct Tracee {
     pid: Pid,
     anon_ranges: RangeMap<usize, ()>,
-    heap_top: Option<usize>,
+    heap_range: Option<Range<usize>>,
 }
 
 impl Tracee {
@@ -43,7 +44,7 @@ impl Tracee {
         Ok(Self {
             pid,
             anon_ranges: Default::default(),
-            heap_top: None,
+            heap_range: None,
         })
     }
 
@@ -97,6 +98,34 @@ impl Tracee {
                         addr.blue(),
                         formatter(diff).red(),
                     );
+                }
+            }
+            libc::SYS_brk => {
+                // just a query? initialize the range if needed
+                if regs.rdi == 0 {
+                    if self.heap_range.is_none() {
+                        self.heap_range = Some(ret..ret);
+                    }
+                } else {
+                    // updating the range?
+                    if let Some(heap_range) = self.heap_range.as_mut() {
+                        #[allow(clippy::comparison_chain)]
+                        if ret > heap_range.end {
+                            self.anon_ranges.insert(heap_range.end..ret, ());
+                            let diff = ret - heap_range.end;
+                            heap_range.end = ret;
+                            eprintln!(
+                                "{:#x} {} added (brk)",
+                                heap_range.end.blue(),
+                                formatter(diff).green(),
+                            );
+                        } else if ret < heap_range.end {
+                            self.anon_ranges.remove(ret..heap_range.end);
+                            let diff = heap_range.end - ret;
+                            heap_range.end = ret;
+                            eprintln!("{:#x} {} removed (brk)", ret.blue(), formatter(diff).red(),);
+                        }
+                    }
                 }
             }
             _other => {
