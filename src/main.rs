@@ -9,6 +9,7 @@ use nix::{
     },
     unistd::Pid,
 };
+use owo_colors::OwoColorize;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("../mem-hog/target/release/mem-hog");
@@ -55,7 +56,16 @@ fn on_sys_exit(pid: Pid) -> Result<(), Box<dyn std::error::Error>> {
     match syscall {
         libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
             let len = regs.rsi as usize;
-            eprintln!("mmap-allocated {} at {:#x}", formatter(len), ret);
+            eprintln!("{:#x} {} added (mmap)", ret.blue(), formatter(len).green(),);
+        }
+        libc::SYS_munmap => {
+            let addr = regs.rdi as usize;
+            let len = regs.rsi as usize;
+            eprintln!(
+                "{:#x} {} removed (munmap)",
+                addr.blue(),
+                formatter(len).red(),
+            );
         }
         _other => {
             // let's ignore that for now
