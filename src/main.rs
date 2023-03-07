@@ -16,6 +16,8 @@ use nix::{
 use owo_colors::OwoColorize;
 use rangemap::RangeMap;
 
+type MemMap = RangeMap<usize, ()>;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("../mem-hog/target/release/mem-hog");
     unsafe {
@@ -32,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct Tracee {
     pid: Pid,
-    anon_ranges: RangeMap<usize, ()>,
+    mem_map: MemMap,
     heap_range: Option<Range<usize>>,
 }
 
@@ -43,7 +45,7 @@ impl Tracee {
 
         Ok(Self {
             pid,
-            anon_ranges: Default::default(),
+            mem_map: Default::default(),
             heap_range: None,
         })
     }
@@ -72,8 +74,6 @@ impl Tracee {
     }
 
     fn on_sys_exit(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let formatter = make_format(BINARY);
-
         let regs = ptrace::getregs(self.pid)?;
         let syscall = regs.orig_rax as i64;
         let ret = regs.rax as usize;
@@ -81,24 +81,16 @@ impl Tracee {
         match syscall {
             libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
                 let len = regs.rsi as usize;
-                eprintln!("{:#x} {} added (mmap)", ret.blue(), formatter(len).green(),);
-                self.anon_ranges.insert(ret..ret + len, ());
+                self.mem_map.mutate("mmap", ret, |mem| {
+                    mem.insert(ret..ret + len, ());
+                })
             }
             libc::SYS_munmap => {
                 let addr = regs.rdi as usize;
                 let len = regs.rsi as usize;
-
-                let total_a = self.anon_ranges.total();
-                self.anon_ranges.remove(addr..(addr + len));
-                let total_b = self.anon_ranges.total();
-
-                if let Some(diff) = total_a.checked_sub(total_b) {
-                    eprintln!(
-                        "{:#x} {} removed (munmap)",
-                        addr.blue(),
-                        formatter(diff).red(),
-                    );
-                }
+                self.mem_map.mutate("munmap", addr, |mem| {
+                    mem.remove(addr..(addr + len));
+                });
             }
             libc::SYS_brk => {
                 // just a query? initialize the range if needed
@@ -108,24 +100,20 @@ impl Tracee {
                     }
                 } else {
                     // updating the range?
-                    if let Some(heap_range) = self.heap_range.as_mut() {
-                        #[allow(clippy::comparison_chain)]
-                        if ret > heap_range.end {
-                            self.anon_ranges.insert(heap_range.end..ret, ());
-                            let diff = ret - heap_range.end;
-                            heap_range.end = ret;
-                            eprintln!(
-                                "{:#x} {} added (brk)",
-                                heap_range.end.blue(),
-                                formatter(diff).green(),
-                            );
-                        } else if ret < heap_range.end {
-                            self.anon_ranges.remove(ret..heap_range.end);
-                            let diff = heap_range.end - ret;
-                            heap_range.end = ret;
-                            eprintln!("{:#x} {} removed (brk)", ret.blue(), formatter(diff).red(),);
-                        }
+                    let Some(heap_range) = self.heap_range.as_mut() else { return Ok(()) };
+
+                    if ret > heap_range.end {
+                        self.mem_map.mutate("brk", heap_range.end, |mem| {
+                            mem.insert(heap_range.end..ret, ());
+                        });
                     }
+                    if ret < heap_range.end {
+                        self.mem_map.mutate("brk", ret, |mem| {
+                            mem.remove(ret..heap_range.end);
+                        });
+                    }
+
+                    heap_range.end = ret;
                 }
             }
             _other => {
@@ -139,10 +127,33 @@ impl Tracee {
 
 trait Total {
     fn total(&self) -> usize;
+    fn mutate(&mut self, syscall: &str, addr: usize, f: impl FnOnce(&mut Self));
 }
 
 impl<V: Eq + Clone> Total for RangeMap<usize, V> {
     fn total(&self) -> usize {
         self.iter().map(|(range, _)| range.end - range.start).sum()
+    }
+
+    fn mutate(&mut self, syscall: &str, addr: usize, f: impl FnOnce(&mut Self)) {
+        let total_a = self.total();
+        f(self);
+        let total_b = self.total();
+
+        if let Some(diff) = total_a.checked_sub(total_b) {
+            eprintln!(
+                "{:#x} {} removed ({})",
+                addr.blue(),
+                make_format(BINARY)(diff).red(),
+                syscall,
+            );
+        } else if let Some(diff) = total_b.checked_sub(total_a) {
+            eprintln!(
+                "{:#x} {} added ({})",
+                addr.blue(),
+                make_format(BINARY)(diff).green(),
+                syscall,
+            );
+        }
     }
 }
