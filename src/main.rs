@@ -1,10 +1,11 @@
 use std::{
+    cmp::Ordering,
     ops::Range,
     os::unix::process::CommandExt,
     process::{Child, Command},
 };
 
-use humansize::{make_format, BINARY};
+use humansize::{make_format, BINARY, DECIMAL};
 use nix::{
     sys::{
         ptrace::{self},
@@ -136,24 +137,35 @@ impl<V: Eq + Clone> Total for RangeMap<usize, V> {
     }
 
     fn mutate(&mut self, syscall: &str, addr: usize, f: impl FnOnce(&mut Self)) {
-        let total_a = self.total();
+        let total_before = self.total();
         f(self);
-        let total_b = self.total();
+        let total_after = self.total();
 
-        if let Some(diff) = total_a.checked_sub(total_b) {
-            eprintln!(
-                "{:#x} {} removed ({})",
-                addr.blue(),
-                make_format(BINARY)(diff).red(),
-                syscall,
-            );
-        } else if let Some(diff) = total_b.checked_sub(total_a) {
-            eprintln!(
-                "{:#x} {} added ({})",
-                addr.blue(),
-                make_format(BINARY)(diff).green(),
-                syscall,
-            );
+        let formatter = make_format(BINARY);
+
+        let print_usage = match total_after.cmp(&total_before) {
+            Ordering::Less => {
+                eprintln!(
+                    "{:#x} {} removed ({})",
+                    addr.blue(),
+                    formatter(total_before - total_after).red(),
+                    syscall,
+                );
+                true
+            }
+            Ordering::Equal => false,
+            Ordering::Greater => {
+                eprintln!(
+                    "{:#x} {} added ({})",
+                    addr.blue(),
+                    formatter(total_after - total_before).green(),
+                    syscall,
+                );
+                true
+            }
+        };
+        if print_usage {
+            eprintln!("Total usage: {}", formatter(self.total()).yellow());
         }
     }
 }
