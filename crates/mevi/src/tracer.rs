@@ -88,7 +88,7 @@ impl Tracee {
                     .send(TraceeEvent::Map {
                         range,
                         resident,
-                        _guard: tx,
+                        _tx: Some(tx),
                     })
                     .unwrap();
 

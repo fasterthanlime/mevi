@@ -4,7 +4,7 @@ use std::{
     cmp::Ordering,
     ops::Range,
     os::{
-        fd::{AsRawFd, FromRawFd},
+        fd::{AsRawFd, FromRawFd, RawFd},
         unix::{net::UnixListener, process::CommandExt},
     },
     process::{Child, Command},
@@ -33,7 +33,7 @@ use owo_colors::OwoColorize;
 use passfd::FdPassingExt;
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::broadcast;
 use tracing::{debug, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
@@ -51,16 +51,16 @@ type MemMap = RangeMap<usize, IsResident>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
-#[derive(Debug)]
-#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize)]
 enum TraceeEvent {
     Map {
         range: Range<usize>,
         resident: IsResident,
-        _guard: mpsc::Sender<()>,
+        #[serde(skip)]
+        _tx: Option<mpsc::Sender<()>>,
     },
     Connected {
-        uffd: &'static Uffd,
+        uffd: RawFd,
     },
     PageIn {
         range: Range<usize>,
@@ -89,17 +89,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::remove_file(SOCK_PATH).ok();
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
 
-    let (tx, rx) = mpsc::sync_channel::<TraceeEvent>(2048);
+    let (tx, rx) = mpsc::sync_channel::<TraceeEvent>(16);
     let tx2 = tx.clone();
 
     std::thread::spawn(move || userfault::run(tx, listener));
     std::thread::spawn(move || tracer::run(tx2));
 
-    let (w_tx, w_rx) = watch::channel(MemMap::default());
+    let (w_tx, _w_rx) = broadcast::channel(1024);
 
     let router = axum::Router::new()
         .route("/ws", axum::routing::get(ws))
-        .with_state(w_rx);
+        .with_state(w_tx.clone());
     let addr = "127.0.0.1:5001".parse().unwrap();
     let server = axum::Server::bind(&addr).serve(router.into_make_service());
 
@@ -109,8 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: watch::Sender<MemMap>) {
-    let mut child_uffd: Option<&'static Uffd> = None;
+fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
+    let mut child_uffd: Option<Uffd> = None;
 
     let mut map: MemMap = Default::default();
 
@@ -148,20 +148,21 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: watch::Sender<MemMap>) {
             }
         };
         debug!("{:?}", ev.blue());
+        let payload = bincode::serialize(&ev).unwrap();
+        _ = w_tx.send(payload);
+
         match ev {
             TraceeEvent::Map {
-                range,
-                resident,
-                _guard,
+                range, resident, ..
             } => {
-                if let Some(uffd) = child_uffd {
+                if let Some(uffd) = child_uffd.as_ref() {
                     uffd.register(range.start as _, range.end - range.start)
                         .unwrap();
                 }
                 map.insert(range, resident);
             }
             TraceeEvent::Connected { uffd } => {
-                child_uffd = Some(uffd);
+                child_uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
             }
             TraceeEvent::PageIn { range } => {
                 map.insert(range, IsResident::Yes);
@@ -182,21 +183,19 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: watch::Sender<MemMap>) {
                 map.insert(new_range, IsResident::Yes);
             }
         }
-        w_tx.send(map.clone()).unwrap();
     }
 }
 
 async fn ws(
-    State(rx): State<watch::Receiver<MemMap>>,
+    State(tx): State<broadcast::Sender<Vec<u8>>>,
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    upgrade.on_upgrade(|ws| handle_ws(rx, ws))
+    upgrade.on_upgrade(move |ws| handle_ws(tx.subscribe(), ws))
 }
 
-async fn handle_ws(mut rx: watch::Receiver<MemMap>, mut ws: WebSocket) {
+async fn handle_ws(mut rx: broadcast::Receiver<Vec<u8>>, mut ws: WebSocket) {
     loop {
-        rx.changed().await.unwrap();
-        let payload = bincode::serialize(&*rx.borrow()).unwrap();
+        let payload = rx.recv().await.unwrap();
         ws.send(Message::Binary(payload)).await.unwrap();
     }
 }

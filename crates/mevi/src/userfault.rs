@@ -2,7 +2,7 @@ use std::{
     cmp::Ordering,
     ops::Range,
     os::{
-        fd::{AsRawFd, FromRawFd},
+        fd::{AsRawFd, FromRawFd, IntoRawFd},
         unix::{net::UnixListener, process::CommandExt},
     },
     process::{Child, Command},
@@ -35,8 +35,10 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
 
     let (stream, _) = listener.accept().unwrap();
     let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-    let uffd: &'static Uffd = Box::leak(Box::new(uffd));
-    tx.send(TraceeEvent::Connected { uffd }).unwrap();
+    tx.send(TraceeEvent::Connected {
+        uffd: uffd.as_raw_fd(),
+    })
+    .unwrap();
 
     loop {
         let event = uffd.read_event().unwrap().unwrap();
