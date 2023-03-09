@@ -54,7 +54,7 @@ impl Tracee {
         for arg in args {
             cmd.arg(arg);
         }
-        cmd.env("LD_PRELOAD", "target/release/libmevi_payload.so");
+        cmd.env("LD_PRELOAD", "target/release/libmevi_preload.so");
         unsafe {
             cmd.pre_exec(|| {
                 ptrace::traceme()?;

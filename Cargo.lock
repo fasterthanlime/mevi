@@ -504,23 +504,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mevi-frontend"
-version = "0.1.0"
-dependencies = [
- "yew",
-]
-
-[[package]]
-name = "mevi-payload"
-version = "0.1.0"
-dependencies = [
- "ctor",
- "passfd",
- "userfaultfd",
-]
-
-[[package]]
-name = "mevi3"
+name = "mevi"
 version = "0.1.0"
 dependencies = [
  "humansize",
@@ -531,6 +515,22 @@ dependencies = [
  "rangemap",
  "tracing",
  "tracing-subscriber",
+ "userfaultfd",
+]
+
+[[package]]
+name = "mevi-frontend"
+version = "0.1.0"
+dependencies = [
+ "yew",
+]
+
+[[package]]
+name = "mevi-preload"
+version = "0.1.0"
+dependencies = [
+ "ctor",
+ "passfd",
  "userfaultfd",
 ]
 

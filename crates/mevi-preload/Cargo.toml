@@ -1,5 +1,5 @@
 [package]
-name = "mevi-payload"
+name = "mevi-preload"
 version = "0.1.0"
 edition = "2021"
 
