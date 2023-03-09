@@ -11,6 +11,7 @@ use std::{
 };
 
 use humansize::{make_format, BINARY};
+use libc::user_regs_struct;
 use nix::{
     sys::{
         ptrace::{self},
@@ -25,61 +26,98 @@ use rangemap::RangeMap;
 use userfaultfd::Uffd;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PageStatus {
+enum Paged {
     In,
     Out,
 }
-type MemMap = RangeMap<usize, PageStatus>;
+type MemMap = RangeMap<usize, Paged>;
 type UffdSlot = Arc<Mutex<Option<Uffd>>>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
+struct SysExitGuard {
+    pid: Pid,
+}
+
+impl Drop for SysExitGuard {
+    fn drop(&mut self) {
+        ptrace::syscall(self.pid, None).unwrap();
+    }
+}
+
+enum TraceeEvent {
+    Map {
+        range: Range<usize>,
+        paged: Paged,
+        _guard: SysExitGuard,
+    },
+    Connected {
+        uffd: &'static Uffd,
+    },
+    PageIn {
+        range: Range<usize>,
+    },
+    PageOut {
+        range: Range<usize>,
+    },
+    Unmap {
+        range: Range<usize>,
+    },
+    Remap {
+        old_range: Range<usize>,
+        new_range: Range<usize>,
+    },
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::remove_file(SOCK_PATH).ok();
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
-    let uffd_slot: UffdSlot = Default::default();
+    let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
+
+    let (tx, rx) = std::sync::mpsc::channel::<TraceeEvent>();
 
     std::thread::spawn({
-        let uffd_slot = uffd_slot.clone();
+        let tx = tx.clone();
         move || {
-            eprintln!("Accepting UDS connection from child");
             let (stream, _) = listener.accept().unwrap();
-            eprintln!("Receiving uffd from child...");
             let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-
-            eprintln!("Received uffd from child!");
-            let uffd_clone = unsafe { Uffd::from_raw_fd(uffd.as_raw_fd()) };
-            uffd_slot.lock().unwrap().replace(uffd_clone);
-
-            let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
-            let mut counter: usize = 0;
-            let mut last_print = Instant::now();
-            let interval = Duration::from_millis(500);
-            let formatter = make_format(BINARY);
+            let uffd: &'static Uffd = Box::leak(Box::new(uffd));
+            tx.send(TraceeEvent::Connected { uffd }).unwrap();
 
             loop {
                 let event = uffd.read_event().unwrap().unwrap();
                 match event {
-                    userfaultfd::Event::Pagefault { addr, .. } => unsafe {
-                        let n = uffd.zeropage(addr, page_size, true).unwrap();
-                        counter += n;
-                        let elapsed = last_print.elapsed();
-                        if elapsed > interval {
-                            eprintln!(
-                                "Paged in {} in the last {elapsed:?}",
-                                formatter(counter as u64).green()
-                            );
-                            last_print = Instant::now();
-                            counter = 0;
+                    userfaultfd::Event::Pagefault { addr, .. } => {
+                        unsafe {
+                            uffd.zeropage(addr, page_size, true).unwrap();
                         }
-
-                        // eprintln!(
-                        //     "{:#x} zeroed {n:#x} bytes ({page_size:#x} pages)",
-                        //     (addr as usize).blue()
-                        // );
-                    },
-                    ev => {
-                        eprintln!("Unexpected event: {:?}", ev);
+                        let addr = addr as usize;
+                        tx.send(TraceeEvent::PageIn {
+                            range: addr..addr + page_size,
+                        })
+                        .unwrap();
+                    }
+                    userfaultfd::Event::Remap { from, to, len } => {
+                        let from = from as usize;
+                        let to = to as usize;
+                        tx.send(TraceeEvent::Remap {
+                            old_range: from..from + len,
+                            new_range: to..to + len,
+                        })
+                        .unwrap();
+                    }
+                    userfaultfd::Event::Remove { start, end } => {
+                        let start = start as usize;
+                        let end = end as usize;
+                        tx.send(TraceeEvent::PageOut { range: start..end }).unwrap();
+                    }
+                    userfaultfd::Event::Unmap { start, end } => {
+                        let start = start as usize;
+                        let end = end as usize;
+                        tx.send(TraceeEvent::Unmap { range: start..end }).unwrap();
+                    }
+                    _ => {
+                        eprintln!("Unexpected event: {:?}", event);
                     }
                 }
             }
@@ -102,10 +140,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let child = cmd.spawn()?;
-    eprintln!("Child's PID is {}", child.id().green());
-    let mut tracee = Tracee::new(child, uffd_slot)?;
-    tracee.run()
+    std::thread::spawn(move || {
+        let child = cmd.spawn().unwrap();
+        eprintln!("Child's PID is {}", child.id().green());
+
+        // wait for initial attach
+        let pid = Pid::from_raw(child.id() as _);
+        waitpid(pid, None).unwrap();
+
+        // then loop waiting for syscalls
+        let wait_for_sys_boundary = || {
+            loop {
+                let wait_status = waitpid(pid, None)?;
+                // eprintln!("wait_status: {:?}", wait_status.yellow());
+                match wait_status {
+                    WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
+                    WaitStatus::Stopped(_, _) => {
+                        // stopped by another signal? resume until syscall
+                        ptrace::syscall(pid, None)?;
+                    }
+                    WaitStatus::Exited(_, status) => {
+                        eprintln!("Child exited with status {status}");
+                        std::process::exit(status);
+                    }
+                    _ => continue,
+                }
+            }
+        };
+
+        loop {
+            wait_for_sys_boundary().unwrap();
+            wait_for_sys_boundary().unwrap();
+            tx.send(TraceeEvent::SyscallExit {
+                regs: ptrace::getregs(pid).unwrap(),
+            })
+            .unwrap();
+        }
+    });
+
+    Ok(())
 }
 
 struct Tracee {
@@ -180,7 +253,7 @@ impl Tracee {
                 );
 
                 self.mem_map.mutate("mmap", ret, |mem| {
-                    mem.insert(ret..ret + len, PageStatus::Out);
+                    mem.insert(ret..ret + len, Paged::Out);
                 });
                 {
                     let uffd_slot = self.uffd_slot.lock().unwrap();
@@ -208,7 +281,7 @@ impl Tracee {
 
                     if ret > heap_range.end {
                         self.mem_map.mutate("brk", heap_range.end, |mem| {
-                            mem.insert(heap_range.end..ret, PageStatus::In);
+                            mem.insert(heap_range.end..ret, Paged::In);
                         });
                         {
                             let uffd_slot = self.uffd_slot.lock().unwrap();
