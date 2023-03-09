@@ -12,6 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use axum::{
+    extract::{
+        ws::{Message, WebSocket},
+        State, WebSocketUpgrade,
+    },
+    response::IntoResponse,
+};
 use humansize::{make_format, BINARY};
 use libc::user_regs_struct;
 use nix::{
@@ -25,6 +32,8 @@ use nix::{
 use owo_colors::OwoColorize;
 use passfd::FdPassingExt;
 use rangemap::RangeMap;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use tracing::{debug, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
@@ -32,7 +41,7 @@ use userfaultfd::Uffd;
 mod tracer;
 mod userfault;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 enum IsResident {
     Yes,
     No,
@@ -68,7 +77,8 @@ enum TraceeEvent {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
@@ -85,14 +95,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || userfault::run(tx, listener));
     std::thread::spawn(move || tracer::run(tx2));
 
+    let (w_tx, w_rx) = watch::channel(MemMap::default());
+
+    let router = axum::Router::new()
+        .route("/ws", axum::routing::get(ws))
+        .with_state(w_rx);
+    let addr = "127.0.0.1:5001".parse().unwrap();
+    let server = axum::Server::bind(&addr).serve(router.into_make_service());
+
+    std::thread::spawn(move || relay(rx, w_tx));
+
+    server.await.unwrap();
+    Ok(())
+}
+
+fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: watch::Sender<MemMap>) {
     let mut child_uffd: Option<&'static Uffd> = None;
 
     let mut map: MemMap = Default::default();
 
     let mut last_print = Instant::now();
     let interval = Duration::from_millis(250);
-
-    // let formatter = make_format(BINARY);
 
     loop {
         let mut first = true;
@@ -159,5 +182,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 map.insert(new_range, IsResident::Yes);
             }
         }
+        w_tx.send(map.clone()).unwrap();
+    }
+}
+
+async fn ws(
+    State(rx): State<watch::Receiver<MemMap>>,
+    upgrade: WebSocketUpgrade,
+) -> impl IntoResponse {
+    upgrade.on_upgrade(|ws| handle_ws(rx, ws))
+}
+
+async fn handle_ws(mut rx: watch::Receiver<MemMap>, mut ws: WebSocket) {
+    loop {
+        rx.changed().await.unwrap();
+        let payload = bincode::serialize(&*rx.borrow()).unwrap();
+        ws.send(Message::Binary(payload)).await.unwrap();
     }
 }
