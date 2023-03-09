@@ -131,11 +131,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 resident,
                 _guard,
             } => {
-                // let size = range.end - range.start;
-                // if size > 0x1000 * 128 {
-                //     warn!("Map {} {:?}", formatter(size), resident);
-                // }
-
                 if let Some(uffd) = child_uffd {
                     uffd.register(range.start as _, range.end - range.start)
                         .unwrap();
@@ -152,7 +147,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 map.insert(range, IsResident::No);
             }
             TraceeEvent::Unmap { range } => {
-                // warn!("Unmap {}", formatter(range.end - range.start));
                 map.remove(range);
             }
             TraceeEvent::Remap {
