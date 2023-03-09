@@ -194,45 +194,35 @@ impl Tracee {
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            trace!("stepping until next syscall");
-            ptrace::syscall(self.pid, None)?;
-            self.syscall_wait()?;
+            self.syscall_step()?;
+            self.syscall_step()?;
 
-            trace!("stepping until next syscall");
-            ptrace::syscall(self.pid, None)?;
-            self.syscall_wait()?;
-
-            match self.on_sys_exit()? {
-                SysExitOutcome::Other => {
-                    // cool
-                }
-                SysExitOutcome::Map { range, resident } => {
-                    let (tx, rx) = mpsc::channel();
-                    let ev = TraceeEvent::Map {
+            if let SysExitOutcome::Map { range, resident } = self.on_sys_exit()? {
+                let (tx, rx) = mpsc::channel();
+                self.tx
+                    .send(TraceeEvent::Map {
                         range,
                         resident,
                         _guard: tx,
-                    };
-                    self.tx.send(ev).unwrap();
+                    })
+                    .unwrap();
 
-                    // this will fail, because it's been dropped. but it'll
-                    // wait until it's dropped, which is what we want
-                    _ = rx.recv();
-                }
+                // this will fail, because it's been dropped. but it'll
+                // wait until it's dropped, which is what we want
+                _ = rx.recv();
             }
         }
     }
 
-    fn syscall_wait(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn syscall_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            trace!("waiting for sys_enter / sys_exit");
+            ptrace::syscall(self.pid, None)?;
             let wait_status = waitpid(self.pid, None)?;
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
                 WaitStatus::Stopped(_, _other_sig) => {
                     warn!("caught other sig: {_other_sig}");
-                    ptrace::syscall(self.pid, None)?;
                     continue;
                 }
                 WaitStatus::Exited(_, status) => {
