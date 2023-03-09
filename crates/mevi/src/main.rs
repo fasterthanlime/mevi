@@ -95,11 +95,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || userfault::run(tx, listener));
     std::thread::spawn(move || tracer::run(tx2));
 
-    let (w_tx, _w_rx) = broadcast::channel(1024);
+    let (w_tx, w_rx) = barrage::bounded(1024);
 
     let router = axum::Router::new()
         .route("/ws", axum::routing::get(ws))
-        .with_state(w_tx.clone());
+        .with_state(w_rx);
     let addr = "127.0.0.1:5001".parse().unwrap();
     let server = axum::Server::bind(&addr).serve(router.into_make_service());
 
@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
+fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: barrage::Sender<Vec<u8>>) {
     let mut child_uffd: Option<Uffd> = None;
 
     let mut map: MemMap = Default::default();
@@ -187,15 +187,15 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
 }
 
 async fn ws(
-    State(tx): State<broadcast::Sender<Vec<u8>>>,
+    State(rx): State<barrage::Receiver<Vec<u8>>>,
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    upgrade.on_upgrade(move |ws| handle_ws(tx.subscribe(), ws))
+    upgrade.on_upgrade(move |ws| handle_ws(rx, ws))
 }
 
-async fn handle_ws(mut rx: broadcast::Receiver<Vec<u8>>, mut ws: WebSocket) {
+async fn handle_ws(rx: barrage::Receiver<Vec<u8>>, mut ws: WebSocket) {
     loop {
-        let payload = rx.recv().await.unwrap();
+        let payload = rx.recv_async().await.unwrap();
         ws.send(Message::Binary(payload)).await.unwrap();
     }
 }
