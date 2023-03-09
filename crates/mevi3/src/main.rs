@@ -7,6 +7,7 @@ use std::{
     },
     process::{Child, Command},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use humansize::{make_format, BINARY};
@@ -51,19 +52,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             uffd_slot.lock().unwrap().replace(uffd_clone);
 
             let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
+            let mut counter: usize = 0;
+            let mut last_print = Instant::now();
+            let interval = Duration::from_millis(500);
+            let formatter = make_format(BINARY);
 
             loop {
                 let event = uffd.read_event().unwrap().unwrap();
-                // eprintln!("Event: {:?}", event);
-
                 match event {
                     userfaultfd::Event::Pagefault { addr, .. } => unsafe {
-                        eprintln!("{:#x} Page fault", (addr as usize).blue());
-                        let _n = uffd.zeropage(addr, page_size, true).unwrap();
-                        // eprintln!("{:#x} Page fault, zeroed {n} bytes", (addr as usize).blue());
+                        let n = uffd.zeropage(addr, page_size, true).unwrap();
+                        counter += n;
+                        let elapsed = last_print.elapsed();
+                        if elapsed > interval {
+                            eprintln!(
+                                "Paged in {} in the last {elapsed:?}",
+                                formatter(counter as u64).green()
+                            );
+                            last_print = Instant::now();
+                            counter = 0;
+                        }
+
+                        // eprintln!(
+                        //     "{:#x} zeroed {n:#x} bytes ({page_size:#x} pages)",
+                        //     (addr as usize).blue()
+                        // );
                     },
                     ev => {
-                        panic!("Unexpected event: {:?}", ev);
+                        eprintln!("Unexpected event: {:?}", ev);
                     }
                 }
             }
@@ -143,8 +159,26 @@ impl Tracee {
         let ret = regs.rax as usize;
 
         match syscall {
-            libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
+            libc::SYS_mmap => {
+                let fd = regs.r8 as i32;
+                let flags = regs.r10;
+                let addr = regs.rdi;
                 let len = regs.rsi as usize;
+                let prot = regs.rdx;
+                let off = regs.r9;
+
+                if fd != -1 {
+                    // don't care about file mappings
+                    return Ok(());
+                }
+                if addr != 0 {
+                    // don't care about fixed mappings
+                    return Ok(());
+                }
+                eprintln!(
+                    "mmap(addr={addr:#x}, len={len:#x}, prot={prot:#x}, flags={flags:#x}, fd={fd}, off={off})"
+                );
+
                 self.mem_map.mutate("mmap", ret, |mem| {
                     mem.insert(ret..ret + len, PageStatus::Out);
                 });
@@ -174,7 +208,7 @@ impl Tracee {
 
                     if ret > heap_range.end {
                         self.mem_map.mutate("brk", heap_range.end, |mem| {
-                            mem.insert(heap_range.end..ret, PageStatus::Out);
+                            mem.insert(heap_range.end..ret, PageStatus::In);
                         });
                         {
                             let uffd_slot = self.uffd_slot.lock().unwrap();
@@ -213,35 +247,37 @@ impl<V: Eq + Clone> Total for RangeMap<usize, V> {
     }
 
     fn mutate(&mut self, syscall: &str, addr: usize, f: impl FnOnce(&mut Self)) {
-        let total_before = self.total();
-        f(self);
-        let total_after = self.total();
+        f(self)
 
-        let formatter = make_format(BINARY);
+        // let total_before = self.total();
+        // f(self);
+        // let total_after = self.total();
 
-        let print_usage = match total_after.cmp(&total_before) {
-            Ordering::Less => {
-                eprintln!(
-                    "{:#x} {} removed ({})",
-                    addr.blue(),
-                    formatter(total_before - total_after).red(),
-                    syscall,
-                );
-                true
-            }
-            Ordering::Equal => false,
-            Ordering::Greater => {
-                eprintln!(
-                    "{:#x} {} added ({})",
-                    addr.blue(),
-                    formatter(total_after - total_before).green(),
-                    syscall,
-                );
-                true
-            }
-        };
-        if print_usage {
-            eprintln!("Total usage: {}", formatter(self.total()).yellow());
-        }
+        // let formatter = make_format(BINARY);
+
+        // let print_usage = match total_after.cmp(&total_before) {
+        //     Ordering::Less => {
+        //         eprintln!(
+        //             "{:#x} {} removed ({})",
+        //             addr.blue(),
+        //             formatter(total_before - total_after).red(),
+        //             syscall,
+        //         );
+        //         true
+        //     }
+        //     Ordering::Equal => false,
+        //     Ordering::Greater => {
+        //         eprintln!(
+        //             "{:#x} {} added ({})",
+        //             addr.blue(),
+        //             formatter(total_after - total_before).green(),
+        //             syscall,
+        //         );
+        //         true
+        //     }
+        // };
+        // if print_usage {
+        //     eprintln!("Total usage: {}", formatter(self.total()).yellow());
+        // }
     }
 }
