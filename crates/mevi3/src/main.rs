@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use std::{
     cmp::Ordering,
     ops::Range,
@@ -6,7 +8,7 @@ use std::{
         unix::{net::UnixListener, process::CommandExt},
     },
     process::{Child, Command},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -25,31 +27,26 @@ use passfd::FdPassingExt;
 use rangemap::RangeMap;
 use userfaultfd::Uffd;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Paged {
-    In,
-    Out,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Resident {
+    Yes,
+    No,
 }
-type MemMap = RangeMap<usize, Paged>;
+
+#[allow(dead_code)]
+type MemMap = RangeMap<usize, Resident>;
+#[allow(dead_code)]
 type UffdSlot = Arc<Mutex<Option<Uffd>>>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
-struct SysExitGuard {
-    pid: Pid,
-}
-
-impl Drop for SysExitGuard {
-    fn drop(&mut self) {
-        ptrace::syscall(self.pid, None).unwrap();
-    }
-}
-
+#[derive(Debug)]
+#[allow(dead_code)]
 enum TraceeEvent {
     Map {
         range: Range<usize>,
-        paged: Paged,
-        _guard: SysExitGuard,
+        resident: Resident,
+        _guard: mpsc::Sender<()>,
     },
     Connected {
         uffd: &'static Uffd,
@@ -74,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
-    let (tx, rx) = std::sync::mpsc::channel::<TraceeEvent>();
+    let (tx, rx) = mpsc::channel::<TraceeEvent>();
 
     std::thread::spawn({
         let tx = tx.clone();
@@ -140,83 +137,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    std::thread::spawn(move || {
-        let child = cmd.spawn().unwrap();
-        eprintln!("Child's PID is {}", child.id().green());
+    let child = cmd.spawn()?;
+    let mut tracee = Tracee::new(tx, child)?;
 
-        // wait for initial attach
-        let pid = Pid::from_raw(child.id() as _);
-        waitpid(pid, None).unwrap();
-
-        // then loop waiting for syscalls
-        let wait_for_sys_boundary = || {
-            loop {
-                let wait_status = waitpid(pid, None)?;
-                // eprintln!("wait_status: {:?}", wait_status.yellow());
-                match wait_status {
-                    WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
-                    WaitStatus::Stopped(_, _) => {
-                        // stopped by another signal? resume until syscall
-                        ptrace::syscall(pid, None)?;
-                    }
-                    WaitStatus::Exited(_, status) => {
-                        eprintln!("Child exited with status {status}");
-                        std::process::exit(status);
-                    }
-                    _ => continue,
-                }
-            }
-        };
-
-        loop {
-            wait_for_sys_boundary().unwrap();
-            wait_for_sys_boundary().unwrap();
-            tx.send(TraceeEvent::SyscallExit {
-                regs: ptrace::getregs(pid).unwrap(),
-            })
-            .unwrap();
-        }
+    std::thread::spawn(move || loop {
+        eprintln!("waiting for event");
+        let ev = rx.recv().unwrap();
+        eprintln!("{:?}", ev.blue());
     });
+
+    tracee.run().unwrap();
 
     Ok(())
 }
 
 struct Tracee {
+    tx: mpsc::Sender<TraceeEvent>,
     pid: Pid,
-    mem_map: MemMap,
     heap_range: Option<Range<usize>>,
-    uffd_slot: Arc<Mutex<Option<Uffd>>>,
+}
+
+enum SysExitOutcome {
+    Map {
+        range: Range<usize>,
+        resident: Resident,
+    },
+    Other,
 }
 
 impl Tracee {
-    fn new(child: Child, uffd_slot: UffdSlot) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(
+        tx: mpsc::Sender<TraceeEvent>,
+        child: Child,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let pid = Pid::from_raw(child.id() as _);
-        waitpid(pid, None)?;
+        std::mem::forget(child);
+
+        let res = waitpid(pid, None)?;
+        eprintln!("first waitpid: {res:?}");
 
         Ok(Self {
+            tx,
             pid,
-            mem_map: Default::default(),
             heap_range: None,
-            uffd_slot,
         })
     }
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            self.syscall_step()?;
-            self.syscall_step()?;
-            self.on_sys_exit()?;
+            eprintln!("stepping until next syscall");
+            ptrace::syscall(self.pid, None)?;
+            self.syscall_wait()?;
+
+            eprintln!("stepping until next syscall");
+            ptrace::syscall(self.pid, None)?;
+            self.syscall_wait()?;
+
+            match self.on_sys_exit()? {
+                SysExitOutcome::Other => {
+                    // cool
+                }
+                SysExitOutcome::Map { range, resident } => {
+                    let (tx, rx) = mpsc::channel();
+                    let ev = TraceeEvent::Map {
+                        range,
+                        resident,
+                        _guard: tx,
+                    };
+                    self.tx.send(ev).unwrap();
+
+                    // this will fail, because it's been dropped. but it'll
+                    // wait until it's dropped, which is what we want
+                    _ = rx.recv();
+                }
+            }
         }
     }
 
-    fn syscall_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn syscall_wait(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            ptrace::syscall(self.pid, None)?;
-
+            eprintln!("waiting for sys_enter / sys_exit");
             let wait_status = waitpid(self.pid, None)?;
-            // eprintln!("wait_status: {:?}", wait_status.yellow());
+            eprintln!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
+                WaitStatus::Stopped(_, _other_sig) => {
+                    eprintln!("caught other sig: {_other_sig}");
+                    ptrace::syscall(self.pid, None)?;
+                    continue;
+                }
                 WaitStatus::Exited(_, status) => {
                     eprintln!("Child exited with status {status}");
                     std::process::exit(status);
@@ -226,8 +235,9 @@ impl Tracee {
         }
     }
 
-    fn on_sys_exit(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn on_sys_exit(&mut self) -> Result<SysExitOutcome, Box<dyn std::error::Error>> {
         let regs = ptrace::getregs(self.pid)?;
+        eprintln!("{regs:?}");
         let syscall = regs.orig_rax as i64;
         let ret = regs.rax as usize;
 
@@ -240,34 +250,15 @@ impl Tracee {
                 let prot = regs.rdx;
                 let off = regs.r9;
 
-                if fd != -1 {
-                    // don't care about file mappings
-                    return Ok(());
+                if fd == -1 && addr == 0 {
+                    eprintln!(
+                        "mmap(addr={addr:#x}, len={len:#x}, prot={prot:#x}, flags={flags:#x}, fd={fd}, off={off})"
+                    );
+                    return Ok(SysExitOutcome::Map {
+                        range: ret..ret + len,
+                        resident: Resident::No,
+                    });
                 }
-                if addr != 0 {
-                    // don't care about fixed mappings
-                    return Ok(());
-                }
-                eprintln!(
-                    "mmap(addr={addr:#x}, len={len:#x}, prot={prot:#x}, flags={flags:#x}, fd={fd}, off={off})"
-                );
-
-                self.mem_map.mutate("mmap", ret, |mem| {
-                    mem.insert(ret..ret + len, Paged::Out);
-                });
-                {
-                    let uffd_slot = self.uffd_slot.lock().unwrap();
-                    if let Some(uffd) = uffd_slot.as_ref() {
-                        uffd.register(ret as _, len).unwrap();
-                    }
-                }
-            }
-            libc::SYS_munmap => {
-                let addr = regs.rdi as usize;
-                let len = regs.rsi as usize;
-                self.mem_map.mutate("munmap", addr, |mem| {
-                    mem.remove(addr..(addr + len));
-                });
             }
             libc::SYS_brk => {
                 // just a query? initialize the range if needed
@@ -277,80 +268,24 @@ impl Tracee {
                     }
                 } else {
                     // updating the range?
-                    let Some(heap_range) = self.heap_range.as_mut() else { return Ok(()) };
+                    if let Some(heap_range) = self.heap_range.as_mut() {
+                        let old_top = heap_range.end;
+                        heap_range.end = ret;
 
-                    if ret > heap_range.end {
-                        self.mem_map.mutate("brk", heap_range.end, |mem| {
-                            mem.insert(heap_range.end..ret, Paged::In);
-                        });
-                        {
-                            let uffd_slot = self.uffd_slot.lock().unwrap();
-                            if let Some(uffd) = uffd_slot.as_ref() {
-                                uffd.register(heap_range.end as _, ret - heap_range.end)
-                                    .unwrap();
-                            }
+                        if heap_range.end > old_top {
+                            return Ok(SysExitOutcome::Map {
+                                range: old_top..heap_range.end,
+                                resident: Resident::Yes,
+                            });
                         }
                     }
-                    if ret < heap_range.end {
-                        self.mem_map.mutate("brk", ret, |mem| {
-                            mem.remove(ret..heap_range.end);
-                        });
-                    }
-
-                    heap_range.end = ret;
                 }
             }
-            _other => {
-                // let's ignore that for now
+            _ => {
+                // let's ignore those
             }
         }
 
-        Ok(())
-    }
-}
-
-trait Total {
-    fn total(&self) -> usize;
-    fn mutate(&mut self, syscall: &str, addr: usize, f: impl FnOnce(&mut Self));
-}
-
-impl<V: Eq + Clone> Total for RangeMap<usize, V> {
-    fn total(&self) -> usize {
-        self.iter().map(|(range, _)| range.end - range.start).sum()
-    }
-
-    fn mutate(&mut self, syscall: &str, addr: usize, f: impl FnOnce(&mut Self)) {
-        f(self)
-
-        // let total_before = self.total();
-        // f(self);
-        // let total_after = self.total();
-
-        // let formatter = make_format(BINARY);
-
-        // let print_usage = match total_after.cmp(&total_before) {
-        //     Ordering::Less => {
-        //         eprintln!(
-        //             "{:#x} {} removed ({})",
-        //             addr.blue(),
-        //             formatter(total_before - total_after).red(),
-        //             syscall,
-        //         );
-        //         true
-        //     }
-        //     Ordering::Equal => false,
-        //     Ordering::Greater => {
-        //         eprintln!(
-        //             "{:#x} {} added ({})",
-        //             addr.blue(),
-        //             formatter(total_after - total_before).green(),
-        //             syscall,
-        //         );
-        //         true
-        //     }
-        // };
-        // if print_usage {
-        //     eprintln!("Total usage: {}", formatter(self.total()).yellow());
-        // }
+        Ok(SysExitOutcome::Other)
     }
 }
