@@ -25,6 +25,8 @@ use nix::{
 use owo_colors::OwoColorize;
 use passfd::FdPassingExt;
 use rangemap::RangeMap;
+use tracing::{debug, info, trace, warn};
+use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,6 +69,13 @@ enum TraceeEvent {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::try_from("info").unwrap()),
+        )
+        .init();
+
     std::fs::remove_file(SOCK_PATH).ok();
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
 
@@ -78,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let ev = rx.recv().unwrap();
-        eprintln!("{:?}", ev.blue());
+        info!("{:?}", ev.blue());
     }
 }
 
@@ -145,7 +154,7 @@ fn userfault_thread(tx: mpsc::Sender<TraceeEvent>, listener: UnixListener) {
                 tx.send(TraceeEvent::Unmap { range: start..end }).unwrap();
             }
             _ => {
-                eprintln!("Unexpected event: {:?}", event);
+                warn!("Unexpected event: {:?}", event);
             }
         }
     }
@@ -174,7 +183,7 @@ impl Tracee {
         std::mem::forget(child);
 
         let res = waitpid(pid, None)?;
-        eprintln!("first waitpid: {res:?}");
+        trace!("first waitpid: {res:?}");
 
         Ok(Self {
             tx,
@@ -185,11 +194,11 @@ impl Tracee {
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            eprintln!("stepping until next syscall");
+            trace!("stepping until next syscall");
             ptrace::syscall(self.pid, None)?;
             self.syscall_wait()?;
 
-            eprintln!("stepping until next syscall");
+            trace!("stepping until next syscall");
             ptrace::syscall(self.pid, None)?;
             self.syscall_wait()?;
 
@@ -216,18 +225,18 @@ impl Tracee {
 
     fn syscall_wait(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            eprintln!("waiting for sys_enter / sys_exit");
+            trace!("waiting for sys_enter / sys_exit");
             let wait_status = waitpid(self.pid, None)?;
-            eprintln!("wait_status: {:?}", wait_status.yellow());
+            trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
                 WaitStatus::Stopped(_, _other_sig) => {
-                    eprintln!("caught other sig: {_other_sig}");
+                    warn!("caught other sig: {_other_sig}");
                     ptrace::syscall(self.pid, None)?;
                     continue;
                 }
                 WaitStatus::Exited(_, status) => {
-                    eprintln!("Child exited with status {status}");
+                    info!("Child exited with status {status}");
                     std::process::exit(status);
                 }
                 _ => continue,
@@ -237,7 +246,7 @@ impl Tracee {
 
     fn on_sys_exit(&mut self) -> Result<SysExitOutcome, Box<dyn std::error::Error>> {
         let regs = ptrace::getregs(self.pid)?;
-        eprintln!("{regs:?}");
+        trace!("on sys_exit: {regs:?}");
         let syscall = regs.orig_rax as i64;
         let ret = regs.rax as usize;
 
@@ -251,7 +260,7 @@ impl Tracee {
                 let off = regs.r9;
 
                 if fd == -1 && addr == 0 {
-                    eprintln!(
+                    debug!(
                         "mmap(addr={addr:#x}, len={len:#x}, prot={prot:#x}, flags={flags:#x}, fd={fd}, off={off})"
                     );
                     return Ok(SysExitOutcome::Map {
