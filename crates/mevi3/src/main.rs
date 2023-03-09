@@ -88,8 +88,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || userfault::run(tx, listener));
     std::thread::spawn(move || tracer::run(tx2));
 
+    let mut child_uffd: Option<&'static Uffd> = None;
+
     loop {
         let ev = rx.recv().unwrap();
         info!("{:?}", ev.blue());
+        match ev {
+            TraceeEvent::Map {
+                range,
+                resident,
+                _guard,
+            } => {
+                if let Some(uffd) = child_uffd {
+                    uffd.register(range.start as _, range.end - range.start)
+                        .unwrap();
+                }
+            }
+            TraceeEvent::Connected { uffd } => {
+                child_uffd = Some(uffd);
+            }
+            TraceeEvent::PageIn { range } => {
+                // todo
+            }
+            TraceeEvent::PageOut { range } => {
+                // todo
+            }
+            TraceeEvent::Unmap { range } => {
+                // todo
+            }
+            TraceeEvent::Remap {
+                old_range,
+                new_range,
+            } => {
+                // todo
+            }
+        }
     }
 }
