@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command},
 };
 
-use humansize::{make_format, BINARY, DECIMAL};
+use humansize::{make_format, BINARY};
 use nix::{
     sys::{
         ptrace::{self},
