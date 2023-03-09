@@ -42,8 +42,8 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
         let event = uffd.read_event().unwrap().unwrap();
         match event {
             userfaultfd::Event::Pagefault { addr, .. } => {
+                let mut size = page_size * 32;
                 unsafe {
-                    let mut size = page_size * 32;
                     loop {
                         match uffd.zeropage(addr, size, true) {
                             Ok(_) => {
@@ -82,7 +82,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
                 }
                 let addr = addr as usize;
                 tx.send(TraceeEvent::PageIn {
-                    range: addr..addr + page_size,
+                    range: addr..addr + size,
                 })
                 .unwrap();
             }
