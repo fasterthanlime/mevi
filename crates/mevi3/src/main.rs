@@ -69,58 +69,20 @@ enum TraceeEvent {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::remove_file(SOCK_PATH).ok();
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
-    let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
     let (tx, rx) = mpsc::channel::<TraceeEvent>();
+    let tx2 = tx.clone();
 
-    std::thread::spawn({
-        let tx = tx.clone();
-        move || {
-            let (stream, _) = listener.accept().unwrap();
-            let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-            let uffd: &'static Uffd = Box::leak(Box::new(uffd));
-            tx.send(TraceeEvent::Connected { uffd }).unwrap();
+    std::thread::spawn(move || userfault_thread(tx, listener));
+    std::thread::spawn(move || tracer_thread(tx2));
 
-            loop {
-                let event = uffd.read_event().unwrap().unwrap();
-                match event {
-                    userfaultfd::Event::Pagefault { addr, .. } => {
-                        unsafe {
-                            uffd.zeropage(addr, page_size, true).unwrap();
-                        }
-                        let addr = addr as usize;
-                        tx.send(TraceeEvent::PageIn {
-                            range: addr..addr + page_size,
-                        })
-                        .unwrap();
-                    }
-                    userfaultfd::Event::Remap { from, to, len } => {
-                        let from = from as usize;
-                        let to = to as usize;
-                        tx.send(TraceeEvent::Remap {
-                            old_range: from..from + len,
-                            new_range: to..to + len,
-                        })
-                        .unwrap();
-                    }
-                    userfaultfd::Event::Remove { start, end } => {
-                        let start = start as usize;
-                        let end = end as usize;
-                        tx.send(TraceeEvent::PageOut { range: start..end }).unwrap();
-                    }
-                    userfaultfd::Event::Unmap { start, end } => {
-                        let start = start as usize;
-                        let end = end as usize;
-                        tx.send(TraceeEvent::Unmap { range: start..end }).unwrap();
-                    }
-                    _ => {
-                        eprintln!("Unexpected event: {:?}", event);
-                    }
-                }
-            }
-        }
-    });
+    loop {
+        let ev = rx.recv().unwrap();
+        eprintln!("{:?}", ev.blue());
+    }
+}
 
+fn tracer_thread(tx: mpsc::Sender<TraceeEvent>) {
     let mut args = std::env::args();
     // skip our own name
     args.next().unwrap();
@@ -137,18 +99,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let child = cmd.spawn()?;
-    let mut tracee = Tracee::new(tx, child)?;
-
-    std::thread::spawn(move || loop {
-        eprintln!("waiting for event");
-        let ev = rx.recv().unwrap();
-        eprintln!("{:?}", ev.blue());
-    });
-
+    let child = cmd.spawn().unwrap();
+    let mut tracee = Tracee::new(tx, child).unwrap();
     tracee.run().unwrap();
+}
 
-    Ok(())
+fn userfault_thread(tx: mpsc::Sender<TraceeEvent>, listener: UnixListener) {
+    let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
+
+    let (stream, _) = listener.accept().unwrap();
+    let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
+    let uffd: &'static Uffd = Box::leak(Box::new(uffd));
+    tx.send(TraceeEvent::Connected { uffd }).unwrap();
+
+    loop {
+        let event = uffd.read_event().unwrap().unwrap();
+        match event {
+            userfaultfd::Event::Pagefault { addr, .. } => {
+                unsafe {
+                    uffd.zeropage(addr, page_size, true).unwrap();
+                }
+                let addr = addr as usize;
+                tx.send(TraceeEvent::PageIn {
+                    range: addr..addr + page_size,
+                })
+                .unwrap();
+            }
+            userfaultfd::Event::Remap { from, to, len } => {
+                let from = from as usize;
+                let to = to as usize;
+                tx.send(TraceeEvent::Remap {
+                    old_range: from..from + len,
+                    new_range: to..to + len,
+                })
+                .unwrap();
+            }
+            userfaultfd::Event::Remove { start, end } => {
+                let start = start as usize;
+                let end = end as usize;
+                tx.send(TraceeEvent::PageOut { range: start..end }).unwrap();
+            }
+            userfaultfd::Event::Unmap { start, end } => {
+                let start = start as usize;
+                let end = end as usize;
+                tx.send(TraceeEvent::Unmap { range: start..end }).unwrap();
+            }
+            _ => {
+                eprintln!("Unexpected event: {:?}", event);
+            }
+        }
+    }
 }
 
 struct Tracee {
