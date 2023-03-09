@@ -49,13 +49,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             loop {
                 let event = uffd.read_event().unwrap().unwrap();
-                eprintln!("Event: {:#?}", event);
+                // eprintln!("Event: {:?}", event);
 
                 match event {
                     userfaultfd::Event::Pagefault { addr, .. } => unsafe {
-                        // eprintln!("{:#x} Page fault", (addr as usize).blue());
-                        let n = uffd.zeropage(addr, page_size, true).unwrap();
-                        eprintln!("{:#x} Page fault, zeroed {n} bytes", (addr as usize).blue());
+                        eprintln!("{:#x} Page fault", (addr as usize).blue());
+                        let _n = uffd.zeropage(addr, page_size, true).unwrap();
+                        // eprintln!("{:#x} Page fault, zeroed {n} bytes", (addr as usize).blue());
                     },
                     ev => {
                         panic!("Unexpected event: {:?}", ev);
@@ -82,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let child = cmd.spawn()?;
+    eprintln!("Child's PID is {}", child.id().green());
     let mut tracee = Tracee::new(child, uffd_slot)?;
     tracee.run()
 }
@@ -119,7 +120,7 @@ impl Tracee {
             ptrace::syscall(self.pid, None)?;
 
             let wait_status = waitpid(self.pid, None)?;
-            eprintln!("wait_status: {:?}", wait_status.yellow());
+            // eprintln!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
                 WaitStatus::Exited(_, status) => {
@@ -142,12 +143,12 @@ impl Tracee {
                 self.mem_map.mutate("mmap", ret, |mem| {
                     mem.insert(ret..ret + len, ());
                 });
-                // {
-                //     let uffd_slot = self.uffd_slot.lock().unwrap();
-                //     if let Some(uffd) = uffd_slot.as_ref() {
-                //         uffd.register(ret as _, len).unwrap();
-                //     }
-                // }
+                {
+                    let uffd_slot = self.uffd_slot.lock().unwrap();
+                    if let Some(uffd) = uffd_slot.as_ref() {
+                        uffd.register(ret as _, len).unwrap();
+                    }
+                }
             }
             libc::SYS_munmap => {
                 let addr = regs.rdi as usize;
