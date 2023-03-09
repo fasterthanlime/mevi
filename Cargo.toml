@@ -1,13 +1,4 @@
-[package]
-name = "mevi3"
-version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-humansize = "2.1.3"
-libc = "0.2.139"
-nix = "0.26.2"
-owo-colors = "3.5.0"
-rangemap = "1.3.0"
+[workspace]
+members = [
+	"crates/*"
+]

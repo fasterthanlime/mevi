@@ -1,8 +1,12 @@
 use std::{
     cmp::Ordering,
     ops::Range,
-    os::unix::process::CommandExt,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{net::UnixListener, process::CommandExt},
+    },
     process::{Child, Command},
+    sync::{Arc, Mutex},
 };
 
 use humansize::{make_format, BINARY};
@@ -12,15 +16,64 @@ use nix::{
         signal::Signal,
         wait::{waitpid, WaitStatus},
     },
-    unistd::Pid,
+    unistd::{sysconf, Pid, SysconfVar},
 };
 use owo_colors::OwoColorize;
+use passfd::FdPassingExt;
 use rangemap::RangeMap;
+use userfaultfd::Uffd;
 
 type MemMap = RangeMap<usize, ()>;
+type UffdSlot = Arc<Mutex<Option<Uffd>>>;
+
+const SOCK_PATH: &str = "/tmp/mevi.sock";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new("../mem-hog/target/release/mem-hog");
+    std::fs::remove_file(SOCK_PATH).ok();
+    let listener = UnixListener::bind(SOCK_PATH).unwrap();
+    let uffd_slot: UffdSlot = Default::default();
+
+    std::thread::spawn({
+        let uffd_slot = uffd_slot.clone();
+        move || {
+            eprintln!("Accepting UDS connection from child");
+            let (stream, _) = listener.accept().unwrap();
+            eprintln!("Receiving uffd from child...");
+            let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
+
+            eprintln!("Received uffd from child!");
+            let uffd_clone = unsafe { Uffd::from_raw_fd(uffd.as_raw_fd()) };
+            uffd_slot.lock().unwrap().replace(uffd_clone);
+
+            let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
+
+            loop {
+                let event = uffd.read_event().unwrap().unwrap();
+                eprintln!("Event: {:#?}", event);
+
+                match event {
+                    userfaultfd::Event::Pagefault { addr, .. } => unsafe {
+                        // eprintln!("{:#x} Page fault", (addr as usize).blue());
+                        let n = uffd.zeropage(addr, page_size, true).unwrap();
+                        eprintln!("{:#x} Page fault, zeroed {n} bytes", (addr as usize).blue());
+                    },
+                    ev => {
+                        panic!("Unexpected event: {:?}", ev);
+                    }
+                }
+            }
+        }
+    });
+
+    let mut args = std::env::args();
+    // skip our own name
+    args.next().unwrap();
+
+    let mut cmd = Command::new(args.next().unwrap());
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.env("LD_PRELOAD", "target/release/libmevi_payload.so");
     unsafe {
         cmd.pre_exec(|| {
             ptrace::traceme()?;
@@ -29,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let child = cmd.spawn()?;
-    let mut tracee = Tracee::new(child)?;
+    let mut tracee = Tracee::new(child, uffd_slot)?;
     tracee.run()
 }
 
@@ -37,10 +90,11 @@ struct Tracee {
     pid: Pid,
     mem_map: MemMap,
     heap_range: Option<Range<usize>>,
+    uffd_slot: Arc<Mutex<Option<Uffd>>>,
 }
 
 impl Tracee {
-    fn new(child: Child) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(child: Child, uffd_slot: UffdSlot) -> Result<Self, Box<dyn std::error::Error>> {
         let pid = Pid::from_raw(child.id() as _);
         waitpid(pid, None)?;
 
@@ -48,6 +102,7 @@ impl Tracee {
             pid,
             mem_map: Default::default(),
             heap_range: None,
+            uffd_slot,
         })
     }
 
@@ -84,7 +139,13 @@ impl Tracee {
                 let len = regs.rsi as usize;
                 self.mem_map.mutate("mmap", ret, |mem| {
                     mem.insert(ret..ret + len, ());
-                })
+                });
+                {
+                    let uffd_slot = self.uffd_slot.lock().unwrap();
+                    if let Some(uffd) = uffd_slot.as_ref() {
+                        uffd.register(ret as _, len).unwrap();
+                    }
+                }
             }
             libc::SYS_munmap => {
                 let addr = regs.rdi as usize;
@@ -107,6 +168,13 @@ impl Tracee {
                         self.mem_map.mutate("brk", heap_range.end, |mem| {
                             mem.insert(heap_range.end..ret, ());
                         });
+                        {
+                            let uffd_slot = self.uffd_slot.lock().unwrap();
+                            if let Some(uffd) = uffd_slot.as_ref() {
+                                uffd.register(heap_range.end as _, ret - heap_range.end)
+                                    .unwrap();
+                            }
+                        }
                     }
                     if ret < heap_range.end {
                         self.mem_map.mutate("brk", ret, |mem| {
