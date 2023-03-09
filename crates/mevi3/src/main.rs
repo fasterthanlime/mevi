@@ -118,7 +118,9 @@ impl Tracee {
         loop {
             ptrace::syscall(self.pid, None)?;
 
-            match waitpid(self.pid, None)? {
+            let wait_status = waitpid(self.pid, None)?;
+            eprintln!("wait_status: {:?}", wait_status.yellow());
+            match wait_status {
                 WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
                 WaitStatus::Exited(_, status) => {
                     eprintln!("Child exited with status {status}");
@@ -140,12 +142,12 @@ impl Tracee {
                 self.mem_map.mutate("mmap", ret, |mem| {
                     mem.insert(ret..ret + len, ());
                 });
-                {
-                    let uffd_slot = self.uffd_slot.lock().unwrap();
-                    if let Some(uffd) = uffd_slot.as_ref() {
-                        uffd.register(ret as _, len).unwrap();
-                    }
-                }
+                // {
+                //     let uffd_slot = self.uffd_slot.lock().unwrap();
+                //     if let Some(uffd) = uffd_slot.as_ref() {
+                //         uffd.register(ret as _, len).unwrap();
+                //     }
+                // }
             }
             libc::SYS_munmap => {
                 let addr = regs.rdi as usize;
