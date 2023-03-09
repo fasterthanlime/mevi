@@ -38,17 +38,15 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
     let uffd: &'static Uffd = Box::leak(Box::new(uffd));
     tx.send(TraceeEvent::Connected { uffd }).unwrap();
 
-    'read_events: loop {
+    loop {
         let event = uffd.read_event().unwrap().unwrap();
         match event {
             userfaultfd::Event::Pagefault { addr, .. } => {
-                let mut size = page_size * 32;
                 unsafe {
                     loop {
-                        match uffd.zeropage(addr, size, true) {
+                        match uffd.zeropage(addr, page_size, true) {
                             Ok(_) => {
                                 // cool!
-                                trace!("{addr:p} {size:#x} zeropage worked");
                                 break;
                             }
                             Err(e) => match e {
@@ -57,32 +55,18 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
                                         // this is actually fine, just try it again
                                         continue;
                                     }
-                                    libc::EEXIST => {
-                                        // this is also fine
-                                        trace!("{addr:p} {size:#x} zeropage already existed");
-                                        uffd.wake(addr, size).unwrap();
-                                        continue 'read_events;
-                                    }
-                                    libc::ENOENT if size > page_size => {
-                                        size = page_size;
-                                        continue;
-                                    }
                                     _ => {
-                                        warn!("{addr:p} {size:#x} zeropage failed: {e}");
-                                        size /= 2;
-                                        if size < page_size {
-                                            panic!("Failed to zeropage");
-                                        }
+                                        panic!("{e}");
                                     }
                                 },
-                                e => panic!("{e}"),
+                                _ => unreachable!(),
                             },
                         }
                     }
                 }
                 let addr = addr as usize;
                 tx.send(TraceeEvent::PageIn {
-                    range: addr..addr + size,
+                    range: addr..addr + page_size,
                 })
                 .unwrap();
             }
