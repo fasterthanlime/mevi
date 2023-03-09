@@ -27,46 +27,43 @@ use tracing::{debug, info, trace, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
 
-use crate::{Resident, TraceeEvent};
+use crate::{IsResident, TraceeEvent};
 
-pub(crate) fn run(tx: mpsc::Sender<TraceeEvent>) {
-    let mut args = std::env::args();
-    // skip our own name
-    args.next().unwrap();
-
-    let mut cmd = Command::new(args.next().unwrap());
-    for arg in args {
-        cmd.arg(arg);
-    }
-    cmd.env("LD_PRELOAD", "target/release/libmevi_payload.so");
-    unsafe {
-        cmd.pre_exec(|| {
-            ptrace::traceme()?;
-            Ok(())
-        });
-    }
-
-    let child = cmd.spawn().unwrap();
-    let mut tracee = Tracee::new(tx, child).unwrap();
-    tracee.run().unwrap();
+pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>) {
+    Tracee::new(tx).unwrap().run().unwrap();
 }
 
 struct Tracee {
-    tx: mpsc::Sender<TraceeEvent>,
+    tx: mpsc::SyncSender<TraceeEvent>,
     pid: Pid,
     heap_range: Option<Range<usize>>,
 }
 
 struct Mapped {
     range: Range<usize>,
-    resident: Resident,
+    resident: IsResident,
 }
 
 impl Tracee {
-    fn new(
-        tx: mpsc::Sender<TraceeEvent>,
-        child: Child,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(tx: mpsc::SyncSender<TraceeEvent>) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut args = std::env::args();
+        // skip our own name
+        args.next().unwrap();
+
+        let mut cmd = Command::new(args.next().unwrap());
+        for arg in args {
+            cmd.arg(arg);
+        }
+        cmd.env("LD_PRELOAD", "target/release/libmevi_payload.so");
+        unsafe {
+            cmd.pre_exec(|| {
+                ptrace::traceme()?;
+                Ok(())
+            });
+        }
+
+        let child = cmd.spawn().unwrap();
+
         let pid = Pid::from_raw(child.id() as _);
         std::mem::forget(child);
 
@@ -136,7 +133,7 @@ impl Tracee {
                 if fd == -1 && addr_in == 0 {
                     return Ok(Some(Mapped {
                         range: ret..ret + len,
-                        resident: Resident::No,
+                        resident: IsResident::No,
                     }));
                 }
             }
@@ -157,7 +154,7 @@ impl Tracee {
                         // userfaultfd
                         return Ok(Some(Mapped {
                             range: old_top..heap_range.end,
-                            resident: Resident::Yes,
+                            resident: IsResident::Yes,
                         }));
                     }
                 }

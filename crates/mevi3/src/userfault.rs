@@ -13,6 +13,7 @@ use std::{
 use humansize::{make_format, BINARY};
 use libc::user_regs_struct;
 use nix::{
+    errno::Errno,
     sys::{
         ptrace::{self},
         signal::Signal,
@@ -29,7 +30,7 @@ use userfaultfd::Uffd;
 
 use crate::TraceeEvent;
 
-pub(crate) fn run(tx: mpsc::Sender<TraceeEvent>, listener: UnixListener) {
+pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
     let (stream, _) = listener.accept().unwrap();
@@ -37,12 +38,47 @@ pub(crate) fn run(tx: mpsc::Sender<TraceeEvent>, listener: UnixListener) {
     let uffd: &'static Uffd = Box::leak(Box::new(uffd));
     tx.send(TraceeEvent::Connected { uffd }).unwrap();
 
-    loop {
+    'read_events: loop {
         let event = uffd.read_event().unwrap().unwrap();
         match event {
             userfaultfd::Event::Pagefault { addr, .. } => {
                 unsafe {
-                    uffd.zeropage(addr, page_size, true).unwrap();
+                    let mut size = page_size * 32;
+                    loop {
+                        match uffd.zeropage(addr, size, true) {
+                            Ok(_) => {
+                                // cool!
+                                trace!("{addr:p} {size:#x} zeropage worked");
+                                break;
+                            }
+                            Err(e) => match e {
+                                userfaultfd::Error::ZeropageFailed(errno) => match errno as i32 {
+                                    libc::EAGAIN => {
+                                        // this is actually fine, just try it again
+                                        continue;
+                                    }
+                                    libc::EEXIST => {
+                                        // this is also fine
+                                        trace!("{addr:p} {size:#x} zeropage already existed");
+                                        uffd.wake(addr, size).unwrap();
+                                        continue 'read_events;
+                                    }
+                                    libc::ENOENT if size > page_size => {
+                                        size = page_size;
+                                        continue;
+                                    }
+                                    _ => {
+                                        warn!("{addr:p} {size:#x} zeropage failed: {e}");
+                                        size /= 2;
+                                        if size < page_size {
+                                            panic!("Failed to zeropage");
+                                        }
+                                    }
+                                },
+                                e => panic!("{e}"),
+                            },
+                        }
+                    }
                 }
                 let addr = addr as usize;
                 tx.send(TraceeEvent::PageIn {

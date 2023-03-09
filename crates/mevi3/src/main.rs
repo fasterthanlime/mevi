@@ -33,15 +33,12 @@ mod tracer;
 mod userfault;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Resident {
+enum IsResident {
     Yes,
     No,
 }
 
-#[allow(dead_code)]
-type MemMap = RangeMap<usize, Resident>;
-#[allow(dead_code)]
-type UffdSlot = Arc<Mutex<Option<Uffd>>>;
+type MemMap = RangeMap<usize, IsResident>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
@@ -50,7 +47,7 @@ const SOCK_PATH: &str = "/tmp/mevi.sock";
 enum TraceeEvent {
     Map {
         range: Range<usize>,
-        resident: Resident,
+        resident: IsResident,
         _guard: mpsc::Sender<()>,
     },
     Connected {
@@ -82,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::remove_file(SOCK_PATH).ok();
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
 
-    let (tx, rx) = mpsc::channel::<TraceeEvent>();
+    let (tx, rx) = mpsc::sync_channel::<TraceeEvent>(2048);
     let tx2 = tx.clone();
 
     std::thread::spawn(move || userfault::run(tx, listener));
@@ -90,9 +87,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut child_uffd: Option<&'static Uffd> = None;
 
+    let mut map: MemMap = Default::default();
+
+    let mut last_print = Instant::now();
+    let interval = Duration::from_millis(250);
+
     loop {
-        let ev = rx.recv().unwrap();
-        info!("{:?}", ev.blue());
+        let mut first = true;
+        let ev = loop {
+            if last_print.elapsed() > interval {
+                last_print = Instant::now();
+                let mut total = 0;
+                let mut resident = 0;
+                for (range, is_resident) in map.iter() {
+                    total += range.end - range.start;
+                    if *is_resident == IsResident::Yes {
+                        resident += range.end - range.start;
+                    }
+                }
+                let format = make_format(BINARY);
+                info!("VIRT: {}, RSS: {}", format(total), format(resident));
+            }
+
+            if first {
+                match rx.recv_timeout(interval) {
+                    Ok(ev) => break ev,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        first = false;
+                        continue;
+                    }
+                    _ => unreachable!(),
+                };
+            } else {
+                break rx.recv().unwrap();
+            }
+        };
+        debug!("{:?}", ev.blue());
         match ev {
             TraceeEvent::Map {
                 range,
@@ -103,24 +133,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     uffd.register(range.start as _, range.end - range.start)
                         .unwrap();
                 }
+                map.insert(range, resident);
             }
             TraceeEvent::Connected { uffd } => {
                 child_uffd = Some(uffd);
             }
             TraceeEvent::PageIn { range } => {
-                // todo
+                map.insert(range, IsResident::Yes);
             }
             TraceeEvent::PageOut { range } => {
-                // todo
+                map.insert(range, IsResident::No);
             }
             TraceeEvent::Unmap { range } => {
-                // todo
+                map.remove(range);
             }
             TraceeEvent::Remap {
                 old_range,
                 new_range,
             } => {
-                // todo
+                // FIXME: that's not right - we should retain the resident state
+                map.remove(old_range);
+                map.insert(new_range, IsResident::Yes);
             }
         }
     }
