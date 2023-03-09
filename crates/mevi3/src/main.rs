@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_print = Instant::now();
     let interval = Duration::from_millis(250);
 
-    let formatter = make_format(BINARY);
+    // let formatter = make_format(BINARY);
 
     loop {
         let mut first = true;
@@ -131,10 +131,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 resident,
                 _guard,
             } => {
-                let size = range.end - range.start;
-                if size > 0x1000 * 128 {
-                    warn!("Map {} {:?}", formatter(size), resident);
-                }
+                // let size = range.end - range.start;
+                // if size > 0x1000 * 128 {
+                //     warn!("Map {} {:?}", formatter(size), resident);
+                // }
 
                 if let Some(uffd) = child_uffd {
                     uffd.register(range.start as _, range.end - range.start)
@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 map.insert(range, IsResident::No);
             }
             TraceeEvent::Unmap { range } => {
-                warn!("Unmap {}", formatter(range.end - range.start));
+                // warn!("Unmap {}", formatter(range.end - range.start));
                 map.remove(range);
             }
             TraceeEvent::Remap {
