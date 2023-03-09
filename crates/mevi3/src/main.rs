@@ -23,7 +23,12 @@ use passfd::FdPassingExt;
 use rangemap::RangeMap;
 use userfaultfd::Uffd;
 
-type MemMap = RangeMap<usize, ()>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PageStatus {
+    In,
+    Out,
+}
+type MemMap = RangeMap<usize, PageStatus>;
 type UffdSlot = Arc<Mutex<Option<Uffd>>>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
@@ -141,7 +146,7 @@ impl Tracee {
             libc::SYS_mmap if regs.r8 == (-1_i32 as u32) as _ => {
                 let len = regs.rsi as usize;
                 self.mem_map.mutate("mmap", ret, |mem| {
-                    mem.insert(ret..ret + len, ());
+                    mem.insert(ret..ret + len, PageStatus::Out);
                 });
                 {
                     let uffd_slot = self.uffd_slot.lock().unwrap();
@@ -169,7 +174,7 @@ impl Tracee {
 
                     if ret > heap_range.end {
                         self.mem_map.mutate("brk", heap_range.end, |mem| {
-                            mem.insert(heap_range.end..ret, ());
+                            mem.insert(heap_range.end..ret, PageStatus::Out);
                         });
                         {
                             let uffd_slot = self.uffd_slot.lock().unwrap();
