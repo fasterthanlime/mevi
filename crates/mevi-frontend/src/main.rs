@@ -57,6 +57,9 @@ fn app() -> Html {
                 drop(write);
 
                 spawn_local(async move {
+                    let mut last_update = instant::Instant::now();
+                    let interval = std::time::Duration::from_millis(100);
+
                     while let Some(msg) = read.next().await {
                         let msg = msg.unwrap();
                         match msg {
@@ -70,22 +73,18 @@ fn app() -> Html {
                                 match msg {
                                     TraceeEvent::Map { range, resident } => {
                                         map_acc.insert(range, resident);
-                                        map.set(map_acc.clone());
                                     }
                                     TraceeEvent::Connected { .. } => {
                                         // ignore
                                     }
                                     TraceeEvent::PageIn { range } => {
                                         map_acc.insert(range, IsResident::Yes);
-                                        map.set(map_acc.clone());
                                     }
                                     TraceeEvent::PageOut { range } => {
                                         map_acc.insert(range, IsResident::No);
-                                        map.set(map_acc.clone());
                                     }
                                     TraceeEvent::Unmap { range } => {
                                         map_acc.remove(range);
-                                        map.set(map_acc.clone());
                                     }
                                     TraceeEvent::Remap {
                                         old_range,
@@ -94,8 +93,11 @@ fn app() -> Html {
                                         map_acc.remove(old_range);
                                         // FIXME: this is wrong but eh.
                                         map_acc.insert(new_range, IsResident::Yes);
-                                        map.set(map_acc.clone());
                                     }
+                                }
+                                if last_update.elapsed() > interval {
+                                    map.set(map_acc.clone());
+                                    last_update = instant::Instant::now();
                                 }
                             }
                         }
@@ -125,7 +127,7 @@ fn app() -> Html {
                     { format!("VIRT: {}, RSS: {}", formatter(total_virt), formatter(total_res)) }
                 </li>
                 {{
-                    let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 30));
+                    let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 40));
                     groups.into_iter().map(
                         |(key, group)| {
                             let mut group_markup = vec![];
