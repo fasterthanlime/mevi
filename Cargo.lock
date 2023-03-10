@@ -801,6 +801,7 @@ dependencies = [
  "futures-util",
  "gloo-console",
  "gloo-net",
+ "humansize",
  "rangemap",
  "serde",
  "wasm-bindgen-futures",

@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
+use humansize::{make_format, BINARY};
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
@@ -105,15 +106,35 @@ fn app() -> Html {
         );
     }
 
+    let mut total_virt: u64 = 0;
+    let mut total_res: u64 = 0;
+    for (range, is_resident) in map.iter() {
+        total_virt += range.end - range.start;
+        if *is_resident == IsResident::Yes {
+            total_res += range.end - range.start;
+        }
+    }
+
+    let formatter = make_format(BINARY);
     html! {
         <>
-            <h1>{ "Hello World" }</h1>
-            <ul>
-            {
-                map.iter().map(|kv| {
-                    html! { <p>{ format!("{kv:?}") }</p> }
-                }).collect::<Vec<_>>()
-            }
+            <h1>{ "Memory maps" }</h1>
+            <ul style="font-family: monospace;">
+                <li>
+                    { format!("VIRT: {}, RSS: {}", formatter(total_virt), formatter(total_res)) }
+                </li>
+                {
+                    map.iter().map(|(range, is_resident)| {
+                        html! {
+                            <li>{
+                                format!("{:#x}..{:#x} ({}, {})", range.start, range.end, match is_resident  {
+                                    IsResident::Yes => "resident",
+                                    IsResident::No => "not resident",
+                                }, formatter(range.end - range.start))
+                            }</li>
+                        }
+                    }).collect::<Vec<_>>()
+                }
             </ul>
         </>
     }
