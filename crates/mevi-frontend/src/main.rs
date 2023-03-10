@@ -15,6 +15,7 @@ type MemMap = RangeMap<u64, IsResident>;
 enum IsResident {
     Yes,
     No,
+    Unmapped,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,9 +64,6 @@ fn app() -> Html {
                 drop(write);
 
                 spawn_local(async move {
-                    // let mut last_update = instant::Instant::now();
-                    // let interval = std::time::Duration::from_millis(100);
-
                     while let Some(msg) = read.next().await {
                         let msg = msg.unwrap();
                         match msg {
@@ -90,13 +88,13 @@ fn app() -> Html {
                                         map_acc.insert(range, IsResident::No);
                                     }
                                     TraceeEvent::Unmap { range } => {
-                                        map_acc.remove(range);
+                                        map_acc.insert(range, IsResident::Unmapped);
                                     }
                                     TraceeEvent::Remap {
                                         old_range,
                                         new_range,
                                     } => {
-                                        map_acc.remove(old_range);
+                                        map_acc.insert(old_range, IsResident::Unmapped);
                                         // FIXME: this is wrong but eh.
                                         map_acc.insert(new_range, IsResident::Yes);
                                     }
@@ -112,10 +110,6 @@ fn app() -> Html {
                                     }
                                 }
                                 map.set(map_acc.clone());
-                                // if last_update.elapsed() > interval {
-                                //     map.set(map_acc.clone());
-                                //     last_update = instant::Instant::now();
-                                // }
                             }
                         }
                     }

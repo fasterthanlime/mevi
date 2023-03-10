@@ -31,6 +31,7 @@ mod userfault;
 enum IsResident {
     Yes,
     No,
+    Unmapped,
 }
 
 type MemMap = RangeMap<usize, IsResident>;
@@ -165,9 +166,12 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
         };
         debug!("{:?}", ev.blue());
 
+        const COALESCE_THRESHOLD: usize = 32;
+        // const COALESCE_THRESHOLD: usize = 128;
+
         match &ev {
             TraceeEvent::PageIn { range } => match acc.as_mut() {
-                Some(Acc::PageIn { range_map, count }) if *count < 128 => {
+                Some(Acc::PageIn { range_map, count }) if *count < COALESCE_THRESHOLD => {
                     range_map.insert(range.clone(), IsResident::Yes);
                     *count += 1;
                 }
@@ -184,7 +188,7 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
                 }
             },
             TraceeEvent::PageOut { range } => match acc.as_mut() {
-                Some(Acc::PageOut { range_map, count }) if *count < 128 => {
+                Some(Acc::PageOut { range_map, count }) if *count < COALESCE_THRESHOLD => {
                     range_map.insert(range.clone(), IsResident::No);
                     *count += 1;
                 }
