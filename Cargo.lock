@@ -801,6 +801,7 @@ dependencies = [
  "futures-util",
  "gloo-console",
  "gloo-net",
+ "rangemap",
  "serde",
  "wasm-bindgen-futures",
  "yew",
