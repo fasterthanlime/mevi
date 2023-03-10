@@ -1,5 +1,66 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head> </head>
+    <head>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap');
+
+            body {
+                background: #010101;
+                color: #fafafa;
+                margin: 20px;
+            }
+
+            * {
+                font-family: 'Source Code Pro', monospace;
+                font-size: 28px;
+            }
+
+            .group-header {
+                margin-top: 1.2em;
+                margin-bottom: .4em;
+            }
+
+            .group {
+                width: 100%;
+                height: 4em;
+                position: relative;
+            }
+
+            i {
+                display: block;
+                position: absolute;
+                height: 100%;
+                border-radius: 16px;
+                box-shadow: inset 0 0 0 0.5px white;
+                font-style: normal;
+                text-align: center;
+                text-shadow: 0 0 4px black;
+            }
+
+            i.Mapped {
+                background: #f4a261;
+            }
+
+            i.DontNeed {
+                background: #2a9d8f;
+            }
+
+            i.Unmapped {
+                background: #264653;
+            }
+
+            i.Heap {
+                background: #e76f51;
+            }
+
+            i.OldHeap {
+                background: #264653;
+            }
+
+            i.default {
+                background: #8ecae6;
+            }
+        </style>
+    </head>
     <body></body>
 </html>
