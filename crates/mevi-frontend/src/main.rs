@@ -11,6 +11,11 @@ use yew::prelude::*;
 
 type MemMap = RangeMap<u64, IsResident>;
 
+struct GroupInfo {
+    start: u64,
+    size: u64,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 enum IsResident {
     Yes,
@@ -137,12 +142,12 @@ fn app() -> Html {
         <>
             <div>
                 <div>
-                    <span class="mem-stats">{format!("VIRT: {}", formatter(total_virt))}</span>
-                    <span class="mem-stats rss">{format!("RSS: {}", formatter(total_res))}</span>
+                    <span class="mem-stats virt"><span class="name">{"Virtual"}</span>{format!("{}", formatter(total_virt))}</span>
+                    <span class="mem-stats rss"><span class="name">{"Resident"}</span>{format!("{}", formatter(total_res))}</span>
                 </div>
                 {{
                     let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 40));
-                    let mut group_sizes = HashMap::new();
+                    let mut group_infos = HashMap::new();
                     for (key, group) in groups.into_iter() {
                         let mut group_start: Option<u64> = None;
                         let mut group_end: Option<u64> = None;
@@ -153,10 +158,13 @@ fn app() -> Html {
                             group_end = Some(range.end);
                         }
                         let size = group_end.unwrap() - group_start.unwrap();
-                        group_sizes.insert(key, size);
+                        group_infos.insert(key, GroupInfo {
+                            start: group_start.unwrap(),
+                            size,
+                        });
                     }
 
-                    let largest_group = group_sizes.values().copied().max().unwrap_or_default();
+                    let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
                     let mut max_mb: u64 = 4 * 1024 * 1024;
                     while max_mb < largest_group {
                         max_mb *= 2;
@@ -166,14 +174,10 @@ fn app() -> Html {
                     let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 40));
                     groups.into_iter().map(
                         |(key, group)| {
+                            let group_info = &group_infos[&key];
                             let mut group_markup = vec![];
-                            let mut group_start = None;
 
                             for (range, is_resident) in group {
-                                if group_start.is_none() {
-                                    group_start = Some(range.start);
-                                }
-
                                 let size = range.end - range.start;
                                 if size < 4 * 4096 {
                                     continue;
@@ -183,7 +187,7 @@ fn app() -> Html {
                                     continue;
                                 }
 
-                                let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
+                                let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_info.start) as f64 / max_mb * 100.0);
                                 group_markup.push(html! {
                                     <i class={format!("{:?}", is_resident)} style={style}>{
                                         if matches!(is_resident, IsResident::Yes) && size > 4 * 1024 * 1024 {
@@ -196,14 +200,14 @@ fn app() -> Html {
                             }
 
                             html! {
-                                <>
-                                    <div class="group_header" style="display: block;">
-                                        { format!("{:#x}...", key) }
+                                <div class="group-outer">
+                                    <div class="group-header" style="display: block;">
+                                        { format!("{:#x}", group_info.start) }
                                     </div>
                                     <div class="group">
                                         { group_markup }
                                     </div>
-                                </>
+                                </div>
                             }
                         }
                     ).collect::<Vec<_>>()
