@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || userfault::run(tx, listener));
     std::thread::spawn(move || tracer::run(tx2));
 
-    let (w_tx, _w_rx) = broadcast::channel(16);
+    let (w_tx, _) = broadcast::channel(16);
 
     let router = axum::Router::new()
         .route("/ws", axum::routing::get(ws))
