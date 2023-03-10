@@ -1,10 +1,6 @@
 use std::{
-    cmp::Ordering,
     ops::Range,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::{net::UnixListener, process::CommandExt},
-    },
+    os::unix::process::CommandExt,
     process::{Child, Command},
     sync::{mpsc, Arc, Mutex},
     time::{Duration, Instant},
