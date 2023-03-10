@@ -15,7 +15,6 @@ use axum::{
     },
     response::IntoResponse,
 };
-// use humansize::{make_format, BINARY};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
 use rangemap::RangeMap;
@@ -151,7 +150,6 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
         };
         debug!("{:?}", ev.blue());
 
-        // const COALESCE_THRESHOLD: usize = 64;
         const COALESCE_THRESHOLD: usize = 128;
 
         match &ev {

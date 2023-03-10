@@ -54,6 +54,14 @@ impl Tracee {
         let res = waitpid(pid, None)?;
         trace!("first waitpid: {res:?}");
 
+        ptrace::setoptions(
+            pid,
+            ptrace::Options::PTRACE_O_TRACEFORK
+                | ptrace::Options::PTRACE_O_TRACEVFORK
+                | ptrace::Options::PTRACE_O_TRACECLONE,
+        )
+        .unwrap();
+
         Ok(Self {
             tx,
             pid,
@@ -84,28 +92,40 @@ impl Tracee {
     }
 
     fn syscall_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        ptrace::syscall(self.pid, None)?;
         loop {
-            ptrace::syscall(self.pid, None)?;
-            let wait_status = waitpid(self.pid, None)?;
+            let wait_status = waitpid(None, None)?;
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
-                WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
-                WaitStatus::Stopped(_, _other_sig) => {
-                    warn!("caught other sig: {_other_sig}");
+                WaitStatus::Stopped(pid, Signal::SIGTRAP) => {
+                    warn!("Got SIGTRAP for {pid}, good");
+                    break Ok(());
+                }
+                WaitStatus::Stopped(pid, sig) => {
+                    warn!("caught other sig: {sig}");
+                    ptrace::syscall(pid, sig)?;
                     continue;
                 }
                 WaitStatus::Exited(_, status) => {
                     info!("Child exited with status {status}");
                     std::process::exit(status);
                 }
-                _ => continue,
+                WaitStatus::PtraceEvent(pid, signal, x) => {
+                    let msg = ptrace::getevent(pid)?;
+                    trace!(%pid, %signal, %x, %msg, "ptrace event");
+                    ptrace::syscall(pid, signal)?;
+                    continue;
+                }
+                other => {
+                    panic!("Unexpected wait status: {other:?}");
+                }
             }
         }
     }
 
     fn on_sys_exit(&mut self) -> Result<Option<Mapped>, Box<dyn std::error::Error>> {
         let regs = ptrace::getregs(self.pid)?;
-        trace!("on sys_exit: {regs:?}");
+        // trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
 
         match regs.orig_rax as i64 {
