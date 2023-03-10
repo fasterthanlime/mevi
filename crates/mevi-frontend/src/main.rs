@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
@@ -128,21 +128,27 @@ fn app() -> Html {
                     let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 30));
                     groups.into_iter().map(
                         |(key, group)| {
-                            let group_markup = group.map(
-                                |(range, is_resident)| {
-                                    let max_mb = (256 * 1024 * 1024) as f64;
-                                    let size = range.end - range.start;
-                                    html! {
-                                        <i class={format!("{:?}", is_resident)} style={format!("width: {}%", size as f64 / max_mb * 100.0)}>{
-                                            // format!("{:#x}..{:#x} ({}, {})", range.start, range.end, match is_resident  {
-                                            //     IsResident::Yes => "resident",
-                                            //     IsResident::No => "not resident",
-                                            // }, formatter(range.end - range.start))
-                                            ""
-                                        }</i>
-                                    }
+                            let mut group_markup = vec![];
+                            let mut group_start = None;
+
+                            for (range, is_resident) in group {
+                                if group_start.is_none() {
+                                    group_start = Some(range.start);
                                 }
-                            ).collect::<Vec<_>>();
+
+                                let max_mb = (256 * 1024 * 1024) as f64;
+                                let size = range.end - range.start;
+                                let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
+                                group_markup.push(html! {
+                                    <i class={format!("{:?}", is_resident)} style={style}>{
+                                        if size > 1000 * 1000 {
+                                            Cow::from(formatter(size).to_string())
+                                        } else {
+                                            Cow::from("")
+                                        }
+                                    }</i>
+                                })
+                            }
 
                             html! {
                                 <li>
