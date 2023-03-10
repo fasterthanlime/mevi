@@ -1,27 +1,15 @@
-use std::{
-    ops::Range,
-    os::unix::process::CommandExt,
-    process::{Child, Command},
-    sync::{mpsc, Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::{ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc};
 
-use humansize::{make_format, BINARY};
-use libc::user_regs_struct;
 use nix::{
     sys::{
         ptrace::{self},
         signal::Signal,
         wait::{waitpid, WaitStatus},
     },
-    unistd::{sysconf, Pid, SysconfVar},
+    unistd::Pid,
 };
 use owo_colors::OwoColorize;
-use passfd::FdPassingExt;
-use rangemap::RangeMap;
-use tracing::{debug, info, trace, warn};
-use tracing_subscriber::EnvFilter;
-use userfaultfd::Uffd;
+use tracing::{info, trace, warn};
 
 use crate::{IsResident, TraceeEvent};
 

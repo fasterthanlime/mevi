@@ -1,31 +1,14 @@
 use std::{
-    cmp::Ordering,
-    ops::Range,
     os::{
-        fd::{AsRawFd, FromRawFd, IntoRawFd},
-        unix::{net::UnixListener, process::CommandExt},
+        fd::{AsRawFd, FromRawFd},
+        unix::net::UnixListener,
     },
-    process::{Child, Command},
-    sync::{mpsc, Arc, Mutex},
-    time::{Duration, Instant},
+    sync::mpsc,
 };
 
-use humansize::{make_format, BINARY};
-use libc::user_regs_struct;
-use nix::{
-    errno::Errno,
-    sys::{
-        ptrace::{self},
-        signal::Signal,
-        wait::{waitpid, WaitStatus},
-    },
-    unistd::{sysconf, Pid, SysconfVar},
-};
-use owo_colors::OwoColorize;
+use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use rangemap::RangeMap;
-use tracing::{debug, info, trace, warn};
-use tracing_subscriber::EnvFilter;
+use tracing::warn;
 use userfaultfd::Uffd;
 
 use crate::TraceeEvent;
