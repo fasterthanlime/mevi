@@ -3,6 +3,7 @@ use std::ops::Range;
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
+use itertools::Itertools;
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
@@ -123,18 +124,34 @@ fn app() -> Html {
                 <li>
                     { format!("VIRT: {}, RSS: {}", formatter(total_virt), formatter(total_res)) }
                 </li>
-                {
-                    map.iter().map(|(range, is_resident)| {
-                        html! {
-                            <li>{
-                                format!("{:#x}..{:#x} ({}, {})", range.start, range.end, match is_resident  {
-                                    IsResident::Yes => "resident",
-                                    IsResident::No => "not resident",
-                                }, formatter(range.end - range.start))
-                            }</li>
+                {{
+                    let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 24));
+                    groups.into_iter().map(
+                        |(key, group)| {
+                            let group_markup = group.map(
+                                |(range, is_resident)| {
+                                    html! {
+                                        <li>{
+                                            format!("{:#x}..{:#x} ({}, {})", range.start, range.end, match is_resident  {
+                                                IsResident::Yes => "resident",
+                                                IsResident::No => "not resident",
+                                            }, formatter(range.end - range.start))
+                                        }</li>
+                                    }
+                                }
+                            ).collect::<Vec<_>>();
+
+                            html! {
+                                <li>
+                                    <h2>{ format!("{:#x}...", key) }</h2>
+                                    <ul>
+                                        { group_markup }
+                                    </ul>
+                                </li>
+                            }
                         }
-                    }).collect::<Vec<_>>()
-                }
+                    ).collect::<Vec<_>>()
+                }}
             </ul>
         </>
     }
