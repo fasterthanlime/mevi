@@ -37,6 +37,11 @@ type MemMap = RangeMap<usize, IsResident>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
+struct PageInAcc {
+    range: Range<usize>,
+    count: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 enum TraceeEvent {
     Map {
@@ -99,6 +104,7 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
     let mut child_uffd: Option<Uffd> = None;
 
     let mut map: MemMap = Default::default();
+    let mut page_in_acc: Option<PageInAcc> = None;
 
     let mut last_print = Instant::now();
     let interval = Duration::from_millis(250);
@@ -130,12 +136,108 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
                     _ => unreachable!(),
                 };
             } else {
+                if let Some(PageInAcc {
+                    range: acc_range,
+                    count,
+                }) = page_in_acc.take()
+                {
+                    if count > 1 {
+                        debug!(
+                            "Coalesced {} page in events, total range: {acc_range:#x?}",
+                            count
+                        );
+
+                        let ev = TraceeEvent::PageIn { range: acc_range };
+                        let payload = bincode::serialize(&ev).unwrap();
+                        _ = w_tx.blocking_send(payload);
+                    }
+                }
+
                 break rx.recv().unwrap();
             }
         };
         debug!("{:?}", ev.blue());
-        let payload = bincode::serialize(&ev).unwrap();
-        _ = w_tx.blocking_send(payload);
+
+        if let TraceeEvent::PageIn { range } = &ev {
+            if let Some(PageInAcc {
+                range: acc_range,
+                count,
+            }) = page_in_acc.as_mut()
+            {
+                if acc_range.end == range.start {
+                    acc_range.end = range.end;
+                    *count += 1;
+                    continue;
+                } else if range.end == acc_range.start {
+                    acc_range.start = range.start;
+                    *count += 1;
+                    continue;
+                } else {
+                    debug!(
+                        "Coalesced {} page in events, total range: {acc_range:#x?}",
+                        count
+                    );
+
+                    let ev = TraceeEvent::PageIn {
+                        range: acc_range.clone(),
+                    };
+                    let payload = bincode::serialize(&ev).unwrap();
+                    _ = w_tx.blocking_send(payload);
+
+                    page_in_acc = Some(PageInAcc {
+                        range: range.clone(),
+                        count: 1,
+                    });
+                }
+            } else {
+                page_in_acc = Some(PageInAcc {
+                    range: range.clone(),
+                    count: 1,
+                });
+                continue;
+            }
+        } else {
+            if let Some(PageInAcc {
+                range: acc_range,
+                count,
+            }) = page_in_acc.take()
+            {
+                if count > 1 {
+                    debug!(
+                        "Coalesced {} page in events, total range: {acc_range:#x?}",
+                        count
+                    );
+
+                    let ev = TraceeEvent::PageIn { range: acc_range };
+                    let payload = bincode::serialize(&ev).unwrap();
+                    _ = w_tx.blocking_send(payload);
+                }
+            }
+
+            let payload = bincode::serialize(&ev).unwrap();
+            _ = w_tx.blocking_send(payload);
+        }
+
+        if let Some(PageInAcc {
+            range: acc_range,
+            count,
+        }) = page_in_acc.as_ref()
+        {
+            if *count >= 64 {
+                debug!(
+                    "Coalesced {} page in events, total range: {acc_range:#x?}",
+                    count
+                );
+
+                let ev = TraceeEvent::PageIn {
+                    range: acc_range.clone(),
+                };
+                let payload = bincode::serialize(&ev).unwrap();
+                _ = w_tx.blocking_send(payload);
+
+                page_in_acc = None;
+            }
+        }
 
         match ev {
             TraceeEvent::Map {

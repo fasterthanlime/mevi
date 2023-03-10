@@ -57,8 +57,8 @@ fn app() -> Html {
                 drop(write);
 
                 spawn_local(async move {
-                    let mut last_update = instant::Instant::now();
-                    let interval = std::time::Duration::from_millis(100);
+                    // let mut last_update = instant::Instant::now();
+                    // let interval = std::time::Duration::from_millis(100);
 
                     while let Some(msg) = read.next().await {
                         let msg = msg.unwrap();
@@ -95,10 +95,11 @@ fn app() -> Html {
                                         map_acc.insert(new_range, IsResident::Yes);
                                     }
                                 }
-                                if last_update.elapsed() > interval {
-                                    map.set(map_acc.clone());
-                                    last_update = instant::Instant::now();
-                                }
+                                map.set(map_acc.clone());
+                                // if last_update.elapsed() > interval {
+                                //     map.set(map_acc.clone());
+                                //     last_update = instant::Instant::now();
+                                // }
                             }
                         }
                     }
