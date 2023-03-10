@@ -37,9 +37,9 @@ type MemMap = RangeMap<usize, IsResident>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
-struct PageInAcc {
-    range_map: MemMap,
-    count: usize,
+enum Acc {
+    PageIn { range_map: MemMap, count: usize },
+    PageOut { range_map: MemMap, count: usize },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -67,6 +67,9 @@ enum TraceeEvent {
         new_range: Range<usize>,
     },
     PageInAcc {
+        range_map: MemMap,
+    },
+    PageOutAcc {
         range_map: MemMap,
     },
 }
@@ -107,10 +110,27 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
     let mut child_uffd: Option<Uffd> = None;
 
     let mut map: MemMap = Default::default();
-    let mut page_in_acc: Option<PageInAcc> = None;
+    let mut acc: Option<Acc> = None;
 
     let mut last_print = Instant::now();
     let interval = Duration::from_millis(250);
+
+    let send_ev = |w_tx: &mut broadcast::Sender<Vec<u8>>, ev: &TraceeEvent| {
+        let payload = bincode::serialize(&ev).unwrap();
+        _ = w_tx.blocking_send(payload);
+    };
+
+    let flush_acc = |w_tx: &mut broadcast::Sender<Vec<u8>>, acc: &mut Option<Acc>| {
+        if let Some(acc) = acc.take() {
+            send_ev(
+                w_tx,
+                &match acc {
+                    Acc::PageIn { range_map, .. } => TraceeEvent::PageInAcc { range_map },
+                    Acc::PageOut { range_map, .. } => TraceeEvent::PageOutAcc { range_map },
+                },
+            )
+        }
+    };
 
     loop {
         let mut first = true;
@@ -139,59 +159,52 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
                     _ => unreachable!(),
                 };
             } else {
-                if let Some(PageInAcc { range_map, count }) = page_in_acc.take() {
-                    if count > 1 {
-                        debug!("Coalesced {count} page in events");
-                        let ev = TraceeEvent::PageInAcc { range_map };
-                        let payload = bincode::serialize(&ev).unwrap();
-                        _ = w_tx.blocking_send(payload);
-                    }
-                }
-
+                flush_acc(&mut w_tx, &mut acc);
                 break rx.recv().unwrap();
             }
         };
         debug!("{:?}", ev.blue());
 
-        if let TraceeEvent::PageIn { range } = &ev {
-            if let Some(PageInAcc { range_map, count }) = page_in_acc.as_mut() {
-                range_map.insert(range.clone(), IsResident::Yes);
-                *count += 1;
-            } else {
-                let mut range_map = MemMap::default();
-                range_map.insert(range.clone(), IsResident::Yes);
-                page_in_acc = Some(PageInAcc {
-                    range_map,
-                    count: 1,
-                });
-                continue;
-            }
-        } else {
-            if let Some(PageInAcc { range_map, count }) = page_in_acc.take() {
-                if count > 1 {
-                    debug!("Coalesced {count} page in events",);
-                    let ev = TraceeEvent::PageInAcc { range_map };
-                    let payload = bincode::serialize(&ev).unwrap();
-                    _ = w_tx.blocking_send(payload);
+        match &ev {
+            TraceeEvent::PageIn { range } => match acc.as_mut() {
+                Some(Acc::PageIn { range_map, count }) if *count < 128 => {
+                    range_map.insert(range.clone(), IsResident::Yes);
+                    *count += 1;
                 }
+                _ => {
+                    flush_acc(&mut w_tx, &mut acc);
+                    acc = Some(Acc::PageIn {
+                        range_map: {
+                            let mut range_map = MemMap::default();
+                            range_map.insert(range.clone(), IsResident::Yes);
+                            range_map
+                        },
+                        count: 1,
+                    });
+                }
+            },
+            TraceeEvent::PageOut { range } => match acc.as_mut() {
+                Some(Acc::PageOut { range_map, count }) if *count < 128 => {
+                    range_map.insert(range.clone(), IsResident::No);
+                    *count += 1;
+                }
+                _ => {
+                    flush_acc(&mut w_tx, &mut acc);
+                    acc = Some(Acc::PageOut {
+                        range_map: {
+                            let mut range_map = MemMap::default();
+                            range_map.insert(range.clone(), IsResident::No);
+                            range_map
+                        },
+                        count: 1,
+                    });
+                }
+            },
+            _ => {
+                flush_acc(&mut w_tx, &mut acc);
+                send_ev(&mut w_tx, &ev);
             }
-
-            let payload = bincode::serialize(&ev).unwrap();
-            _ = w_tx.blocking_send(payload);
-        }
-
-        if let Some(PageInAcc { range_map, count }) = page_in_acc.as_ref() {
-            if *count >= 128 {
-                debug!("Coalesced {count} page in events");
-                let ev = TraceeEvent::PageInAcc {
-                    range_map: range_map.clone(),
-                };
-                let payload = bincode::serialize(&ev).unwrap();
-                _ = w_tx.blocking_send(payload);
-
-                page_in_acc = None;
-            }
-        }
+        };
 
         match ev {
             TraceeEvent::Map {

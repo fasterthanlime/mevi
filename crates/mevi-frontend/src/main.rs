@@ -42,6 +42,9 @@ enum TraceeEvent {
     PageInAcc {
         range_map: MemMap,
     },
+    PageOutAcc {
+        range_map: MemMap,
+    },
 }
 
 #[function_component(App)]
@@ -102,6 +105,11 @@ fn app() -> Html {
                                             map_acc.insert(range, is_resident);
                                         }
                                     }
+                                    TraceeEvent::PageOutAcc { range_map } => {
+                                        for (range, is_resident) in range_map.into_iter() {
+                                            map_acc.insert(range, is_resident);
+                                        }
+                                    }
                                 }
                                 map.set(map_acc.clone());
                                 // if last_update.elapsed() > interval {
@@ -147,7 +155,7 @@ fn app() -> Html {
                                     group_start = Some(range.start);
                                 }
 
-                                let max_mb = (256 * 1024 * 1024) as f64;
+                                let max_mb = (240 * 1024 * 1024) as f64;
                                 let size = range.end - range.start;
                                 let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
                                 group_markup.push(html! {
