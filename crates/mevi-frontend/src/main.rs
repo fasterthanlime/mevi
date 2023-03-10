@@ -123,7 +123,10 @@ fn app() -> Html {
     let mut total_virt: u64 = 0;
     let mut total_res: u64 = 0;
     for (range, is_resident) in map.iter() {
-        total_virt += range.end - range.start;
+        if *is_resident != IsResident::Unmapped {
+            total_virt += range.end - range.start;
+        }
+
         if *is_resident == IsResident::Yes {
             total_res += range.end - range.start;
         }
@@ -143,18 +146,24 @@ fn app() -> Html {
                         |(key, group)| {
                             let mut group_markup = vec![];
                             let mut group_start = None;
+                            let max_mb = (160 * 1024 * 1024) as f64;
+                            // let max_mb = (240 * 1024 * 1024) as f64;
+                            // let max_mb = (2_u64 * 1024 * 1024 * 1024) as f64;
 
                             for (range, is_resident) in group {
                                 if group_start.is_none() {
                                     group_start = Some(range.start);
                                 }
 
-                                let max_mb = (240 * 1024 * 1024) as f64;
                                 let size = range.end - range.start;
+                                if size < 4 * 4096 {
+                                    continue;
+                                }
+
                                 let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
                                 group_markup.push(html! {
                                     <i class={format!("{:?}", is_resident)} style={style}>{
-                                        if size > 1000 * 1000 {
+                                        if size > 1024 * 1024 {
                                             Cow::from(formatter(size).to_string())
                                         } else {
                                             Cow::from("")

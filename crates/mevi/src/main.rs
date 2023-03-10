@@ -5,7 +5,7 @@ use std::{
         unix::net::UnixListener,
     },
     sync::mpsc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use axum::{
@@ -15,12 +15,12 @@ use axum::{
     },
     response::IntoResponse,
 };
-use humansize::{make_format, BINARY};
+// use humansize::{make_format, BINARY};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
 
@@ -113,8 +113,7 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
     let mut map: MemMap = Default::default();
     let mut acc: Option<Acc> = None;
 
-    let mut last_print = Instant::now();
-    let interval = Duration::from_millis(250);
+    let interval = Duration::from_millis(150);
 
     let send_ev = |w_tx: &mut broadcast::Sender<Vec<u8>>, ev: &TraceeEvent| {
         let payload = bincode::serialize(&ev).unwrap();
@@ -136,20 +135,6 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
     loop {
         let mut first = true;
         let ev = loop {
-            if last_print.elapsed() > interval {
-                last_print = Instant::now();
-                let mut total = 0;
-                let mut resident = 0;
-                for (range, is_resident) in map.iter() {
-                    total += range.end - range.start;
-                    if *is_resident == IsResident::Yes {
-                        resident += range.end - range.start;
-                    }
-                }
-                let format = make_format(BINARY);
-                info!("VIRT: {}, RSS: {}", format(total), format(resident));
-            }
-
             if first {
                 match rx.recv_timeout(interval) {
                     Ok(ev) => break ev,
@@ -166,8 +151,8 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
         };
         debug!("{:?}", ev.blue());
 
-        const COALESCE_THRESHOLD: usize = 32;
-        // const COALESCE_THRESHOLD: usize = 128;
+        // const COALESCE_THRESHOLD: usize = 64;
+        const COALESCE_THRESHOLD: usize = 128;
 
         match &ev {
             TraceeEvent::PageIn { range } => match acc.as_mut() {
