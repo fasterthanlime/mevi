@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (w_tx, _) = broadcast::channel(16);
 
     let router = axum::Router::new()
-        .route("/ws", axum::routing::get(ws))
+        .route("/stream", axum::routing::get(stream))
         .with_state(w_tx.clone());
     let addr = "127.0.0.1:5001".parse().unwrap();
     let server = axum::Server::bind(&addr).serve(router.into_make_service());
@@ -231,7 +231,7 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
     }
 }
 
-async fn ws(
+async fn stream(
     State(tx): State<broadcast::Sender<Vec<u8>>>,
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {

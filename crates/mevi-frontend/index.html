@@ -8,21 +8,26 @@
         @import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap');
 
         :root {
-            --body-bg: #131314;
-            --rss-color: #52796f;
-            --virt-color: #354f52;
-            --group-bg: #232323;
+            /*
+            --body-bg: #0d1b2a;
+            --group-bg: #1b263b;
+            */
+            --body-bg: #111111;
+            --group-bg: #0d1b2a;
+            --virt-color: #1b263b;
+            --rss-color: #415a77;
         }
 
         body {
             background: var(--body-bg);
             color: #fafafa;
+            /* color: #111; */
             margin: 20px;
         }
 
         * {
             font-family: 'Share Tech Mono', monospace;
-            font-size: 16px;
+            font-size: 18px;
         }
 
         .mem-stats {
@@ -53,9 +58,9 @@
         }
 
         .group-outer {
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            /* border: 1px solid rgba(255, 255, 255, 0.3); */
             border-radius: 4px;
-            background: var(--group-bg);
+            /* background: var(--group-bg); */
             padding: 0 .2em;
             margin: .4em 0;
             display: flex;
@@ -64,8 +69,7 @@
         }
 
         .group-header {
-            /* font-size: 120%; */
-            margin: 0 .5em;
+            margin: 0 1em 0 .6em;
         }
 
         .group {
@@ -85,7 +89,7 @@
             white-space: nowrap;
             text-overflow: ellipsis;
             overflow-x: hidden;
-            text-indent: .5em;
+            text-indent: .2em;
             line-height: 2;
         }
 
