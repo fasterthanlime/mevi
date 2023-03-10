@@ -39,6 +39,9 @@ enum TraceeEvent {
         old_range: Range<u64>,
         new_range: Range<u64>,
     },
+    PageInAcc {
+        range_map: MemMap,
+    },
 }
 
 #[function_component(App)]
@@ -93,6 +96,11 @@ fn app() -> Html {
                                         map_acc.remove(old_range);
                                         // FIXME: this is wrong but eh.
                                         map_acc.insert(new_range, IsResident::Yes);
+                                    }
+                                    TraceeEvent::PageInAcc { range_map } => {
+                                        for (range, is_resident) in range_map.into_iter() {
+                                            map_acc.insert(range, is_resident);
+                                        }
                                     }
                                 }
                                 map.set(map_acc.clone());
