@@ -797,6 +797,12 @@ dependencies = [
 name = "mevi-frontend"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "futures-util",
+ "gloo-console",
+ "gloo-net",
+ "serde",
+ "wasm-bindgen-futures",
  "yew",
 ]
 
