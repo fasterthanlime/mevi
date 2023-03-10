@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, collections::HashMap, ops::Range};
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
@@ -135,20 +135,39 @@ fn app() -> Html {
     let formatter = make_format(BINARY);
     html! {
         <>
-            <h1>{ "Memory maps" }</h1>
-            <ul style="font-family: monospace;">
-                <li>
-                    { format!("VIRT: {}, RSS: {}", formatter(total_virt), formatter(total_res)) }
-                </li>
+            <div>
+                <div>
+                    <span class="mem-stats">{format!("VIRT: {}", formatter(total_virt))}</span>
+                    <span class="mem-stats rss">{format!("RSS: {}", formatter(total_res))}</span>
+                </div>
                 {{
+                    let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 40));
+                    let mut group_sizes = HashMap::new();
+                    for (key, group) in groups.into_iter() {
+                        let mut group_start: Option<u64> = None;
+                        let mut group_end: Option<u64> = None;
+                        for (range, _is_resident) in group {
+                            if group_start.is_none() {
+                                group_start = Some(range.start);
+                            }
+                            group_end = Some(range.end);
+                        }
+                        let size = group_end.unwrap() - group_start.unwrap();
+                        group_sizes.insert(key, size);
+                    }
+
+                    let largest_group = group_sizes.values().copied().max().unwrap_or_default();
+                    let mut max_mb: u64 = 4 * 1024 * 1024;
+                    while max_mb < largest_group {
+                        max_mb *= 2;
+                    }
+                    let max_mb = max_mb as f64;
+
                     let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 40));
                     groups.into_iter().map(
                         |(key, group)| {
                             let mut group_markup = vec![];
                             let mut group_start = None;
-                            let max_mb = (160 * 1024 * 1024) as f64;
-                            // let max_mb = (240 * 1024 * 1024) as f64;
-                            // let max_mb = (2_u64 * 1024 * 1024 * 1024) as f64;
 
                             for (range, is_resident) in group {
                                 if group_start.is_none() {
@@ -160,10 +179,14 @@ fn app() -> Html {
                                     continue;
                                 }
 
+                                if matches!(is_resident, IsResident::Unmapped) {
+                                    continue;
+                                }
+
                                 let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
                                 group_markup.push(html! {
                                     <i class={format!("{:?}", is_resident)} style={style}>{
-                                        if size > 1024 * 1024 {
+                                        if matches!(is_resident, IsResident::Yes) && size > 4 * 1024 * 1024 {
                                             Cow::from(formatter(size).to_string())
                                         } else {
                                             Cow::from("")
@@ -173,19 +196,19 @@ fn app() -> Html {
                             }
 
                             html! {
-                                <li>
+                                <>
                                     <div class="group_header" style="display: block;">
                                         { format!("{:#x}...", key) }
                                     </div>
                                     <div class="group">
                                         { group_markup }
                                     </div>
-                                </li>
+                                </>
                             }
                         }
                     ).collect::<Vec<_>>()
                 }}
-            </ul>
+            </div>
         </>
     }
 }

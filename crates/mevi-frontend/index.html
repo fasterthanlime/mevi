@@ -1,54 +1,84 @@
 <!DOCTYPE html>
 <html lang="en">
-    <head>
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap');
 
-            body {
-                background: #010101;
-                color: #fafafa;
-                margin: 20px;
-            }
+<head>
+    <title>mevi3</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap');
 
-            * {
-                font-family: 'Source Code Pro', monospace;
-                font-size: 14px;
-            }
+        :root {
+            --rss-color: #0d4382;
+        }
 
-            .group-header {
-                margin-top: 1.2em;
-                margin-bottom: .4em;
-            }
+        body {
+            background: #14141f;
+            color: #fafafa;
+            margin: 20px;
+        }
 
-            .group {
-                width: 100%;
-                height: 4em;
-                position: relative;
-            }
+        * {
+            /* font-family: 'Source Code Pro', monospace; */
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 16px;
+        }
 
-            i {
-                display: block;
-                position: absolute;
-                height: 100%;
-                border-radius: 0;
-                border-left: 1px solid white;
-                font-style: normal;
-                text-align: left;
-                text-shadow: 0 0 4px black;
-            }
+        .mem-stats {
+            font-size: 150%;
+            padding-right: 3em;
+        }
 
-            i.Yes {
-                background: #7777ff;
-            }
+        .group-header {
+            margin-top: 1.2em;
+            margin-bottom: .4em;
+        }
 
-            i.No {
-                background: #555599;
-            }
+        .group {
+            width: 100%;
+            height: 4em;
+            position: relative;
+            margin: 1em;
+        }
 
-            i.Unmapped {
-                background: #1f1f1f;
-            }
-        </style>
-    </head>
-    <body></body>
+        i {
+            display: block;
+            position: absolute;
+            height: 100%;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            font-style: normal;
+            text-align: left;
+            /* vertical-align: middle; */
+            white-space: nowrap;
+            text-overflow: ellipsis;
+            overflow-x: hidden;
+            text-indent: .5em;
+            line-height: 2;
+        }
+
+        i.Yes {
+            background-color: #0d4382;
+            /* box-shadow: 0 0 15px rgba(255, 255, 255, 0.15); */
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+        }
+
+        i.No {
+            /* background: repeating-linear-gradient(45deg,
+                    #0d4382,
+                    #0d4382 10px,
+                    #1f1f1f 10px,
+                    #1f1f1f 20px); */
+            /* box-shadow: 0 0 15px rgba(255, 255, 255, 0.15); */
+            /* box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.2); */
+            /* background-color: rgba(255, 255, 255, 0.2); */
+            background-color: #222;
+        }
+
+        i.Unmapped {
+            background-color: #1f1f1f;
+        }
+    </style>
+</head>
+
+<body></body>
+
 </html>

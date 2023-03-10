@@ -1,9 +1,9 @@
 use std::{ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc};
 
+use libc::user_regs_struct;
 use nix::{
     sys::{
         ptrace::{self},
-        signal::Signal,
         wait::{waitpid, WaitStatus},
     },
     unistd::Pid,
@@ -19,7 +19,6 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>) {
 
 struct Tracee {
     tx: mpsc::SyncSender<TraceeEvent>,
-    pid: Pid,
     heap_range: Option<Range<usize>>,
 }
 
@@ -58,23 +57,26 @@ impl Tracee {
             pid,
             ptrace::Options::PTRACE_O_TRACEFORK
                 | ptrace::Options::PTRACE_O_TRACEVFORK
-                | ptrace::Options::PTRACE_O_TRACECLONE,
+                | ptrace::Options::PTRACE_O_TRACECLONE
+                | ptrace::Options::PTRACE_O_TRACESYSGOOD,
         )
         .unwrap();
 
+        ptrace::syscall(pid, None)?;
+
         Ok(Self {
             tx,
-            pid,
             heap_range: None,
         })
     }
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            self.syscall_step()?;
-            self.syscall_step()?;
+            let (pid, _regs) = self.syscall_step()?;
+            ptrace::syscall(pid, None)?;
 
-            if let Some(Mapped { range, resident }) = self.on_sys_exit()? {
+            let (pid, regs) = self.syscall_step()?;
+            if let Some(Mapped { range, resident }) = self.on_sys_exit(pid, regs)? {
                 let (tx, rx) = mpsc::channel();
                 self.tx
                     .send(TraceeEvent::Map {
@@ -88,19 +90,15 @@ impl Tracee {
                 // wait until it's dropped, which is what we want
                 _ = rx.recv();
             }
+            ptrace::syscall(pid, None)?;
         }
     }
 
-    fn syscall_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        ptrace::syscall(self.pid, None)?;
+    fn syscall_step(&mut self) -> Result<(Pid, user_regs_struct), Box<dyn std::error::Error>> {
         loop {
             let wait_status = waitpid(None, None)?;
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
-                WaitStatus::Stopped(pid, Signal::SIGTRAP) => {
-                    warn!("Got SIGTRAP for {pid}, good");
-                    break Ok(());
-                }
                 WaitStatus::Stopped(pid, sig) => {
                     warn!("caught other sig: {sig}");
                     ptrace::syscall(pid, sig)?;
@@ -116,6 +114,10 @@ impl Tracee {
                     ptrace::syscall(pid, signal)?;
                     continue;
                 }
+                WaitStatus::PtraceSyscall(pid) => {
+                    let regs = ptrace::getregs(pid)?;
+                    break Ok((pid, regs));
+                }
                 other => {
                     panic!("Unexpected wait status: {other:?}");
                 }
@@ -123,9 +125,12 @@ impl Tracee {
         }
     }
 
-    fn on_sys_exit(&mut self) -> Result<Option<Mapped>, Box<dyn std::error::Error>> {
-        let regs = ptrace::getregs(self.pid)?;
-        // trace!("on sys_exit: {regs:?}");
+    fn on_sys_exit(
+        &mut self,
+        pid: Pid,
+        regs: user_regs_struct,
+    ) -> Result<Option<Mapped>, Box<dyn std::error::Error>> {
+        trace!("[{pid}] on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
 
         match regs.orig_rax as i64 {
