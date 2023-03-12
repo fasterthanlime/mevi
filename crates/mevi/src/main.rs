@@ -170,6 +170,7 @@ impl TraceeState {
         }
 
         self.batch.insert(range, state);
+        self.batch_size += 1;
     }
 
     fn register(&mut self, range: &Range<usize>) {
