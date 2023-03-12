@@ -12,7 +12,7 @@ use nix::{
     unistd::Pid,
 };
 use owo_colors::OwoColorize;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 use crate::{MapGuard, MemState, TraceeEvent, TraceeId, TraceePayload};
 
@@ -89,7 +89,7 @@ impl Tracer {
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
-                    warn!("{pid} caught sig {sig}");
+                    debug!("{pid} caught sig {sig}");
                     if sig == Signal::SIGTRAP {
                         // probably ptrace stuff?
                         ptrace::syscall(pid, None)?;
@@ -141,7 +141,7 @@ impl Tracer {
                         libc::PTRACE_EVENT_VFORK => "vfork".into(),
                         other => format!("unknown event {}", other).into(),
                     };
-                    info!("{pid} got event {event_name} with sig {sig}");
+                    debug!("{pid} got event {event_name} with sig {sig}");
                     ptrace::syscall(pid, None)?;
                 }
                 WaitStatus::Signaled(pid, signal, core_dump) => {
