@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, collections::HashMap, ops::Range};
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
@@ -9,29 +9,38 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
-type MemMap = RangeMap<u64, IsResident>;
+type MemMap = RangeMap<u64, MemState>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-enum IsResident {
-    Yes,
-    No,
+enum MemState {
+    Resident,
+    NotResident,
     Unmapped,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+struct GroupInfo {
+    start: u64,
+    size: u64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+struct TraceeId(u64);
+
+#[derive(Debug, Deserialize)]
 struct TraceeEvent {
-    pid: u64,
+    tid: TraceeId,
     payload: TraceePayload,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 enum TraceePayload {
     Map {
         range: Range<u64>,
-        resident: IsResident,
+        resident: MemState,
     },
     Connected {
-        uffd: u64,
+        _uffd: u64,
     },
     PageIn {
         range: Range<u64>,
@@ -46,22 +55,26 @@ enum TraceePayload {
         old_range: Range<u64>,
         new_range: Range<u64>,
     },
-    PageInAcc {
-        range_map: MemMap,
+    Batch {
+        batch: MemMap,
     },
-    PageOutAcc {
-        range_map: MemMap,
-    },
+}
+
+#[derive(Clone)]
+struct TraceeState {
+    tid: TraceeId,
+    map: MemMap,
 }
 
 #[function_component(App)]
 fn app() -> Html {
-    let map = use_state(MemMap::default);
+    let tracees = use_state(|| -> HashMap<TraceeId, TraceeState> { Default::default() });
+
     {
-        let map = map.clone();
+        let tracees = tracees.clone();
         use_effect_with_deps(
             move |_| {
-                let mut map_acc = MemMap::default();
+                let mut tracees_acc = HashMap::new();
 
                 gloo_console::log!("Connecting to WebSocket...");
                 let ws = WebSocket::open("ws://localhost:5001/ws").unwrap();
@@ -77,45 +90,11 @@ fn app() -> Html {
                                 gloo_console::log!(format!("text message: {t}"))
                             }
                             Message::Bytes(b) => {
-                                let msg: TraceeEvent = bincode::deserialize(&b).unwrap();
-                                gloo_console::log!(format!("{:?}", msg));
+                                let ev: TraceeEvent = bincode::deserialize(&b).unwrap();
+                                // gloo_console::log!(format!("{:?}", ev));
 
-                                match msg.payload {
-                                    TraceePayload::Map { range, resident } => {
-                                        map_acc.insert(range, resident);
-                                    }
-                                    TraceePayload::Connected { .. } => {
-                                        // ignore
-                                    }
-                                    TraceePayload::PageIn { range } => {
-                                        map_acc.insert(range, IsResident::Yes);
-                                    }
-                                    TraceePayload::PageOut { range } => {
-                                        map_acc.insert(range, IsResident::No);
-                                    }
-                                    TraceePayload::Unmap { range } => {
-                                        map_acc.insert(range, IsResident::Unmapped);
-                                    }
-                                    TraceePayload::Remap {
-                                        old_range,
-                                        new_range,
-                                    } => {
-                                        map_acc.insert(old_range, IsResident::Unmapped);
-                                        // FIXME: this is wrong but eh.
-                                        map_acc.insert(new_range, IsResident::Yes);
-                                    }
-                                    TraceePayload::PageInAcc { range_map } => {
-                                        for (range, is_resident) in range_map.into_iter() {
-                                            map_acc.insert(range, is_resident);
-                                        }
-                                    }
-                                    TraceePayload::PageOutAcc { range_map } => {
-                                        for (range, is_resident) in range_map.into_iter() {
-                                            map_acc.insert(range, is_resident);
-                                        }
-                                    }
-                                }
-                                map.set(map_acc.clone());
+                                apply_ev(&mut tracees_acc, ev);
+                                tracees.set(tracees_acc.clone());
                             }
                         }
                     }
@@ -128,12 +107,12 @@ fn app() -> Html {
 
     let mut total_virt: u64 = 0;
     let mut total_res: u64 = 0;
-    for (range, is_resident) in map.iter() {
-        if *is_resident != IsResident::Unmapped {
+    for (range, mem_state) in tracees.values().flat_map(|v| v.map.iter()) {
+        if *mem_state != MemState::Unmapped {
             total_virt += range.end - range.start;
         }
 
-        if *is_resident == IsResident::Yes {
+        if *mem_state == MemState::Resident {
             total_res += range.end - range.start;
         }
     }
@@ -147,52 +126,126 @@ fn app() -> Html {
                     { format!("VIRT: {}, RSS: {}", formatter(total_virt), formatter(total_res)) }
                 </li>
                 {{
-                    let groups = map.iter().group_by(|(range, _is_resident)| (range.start >> 40));
-                    groups.into_iter().map(
-                        |(key, group)| {
-                            let mut group_markup = vec![];
-                            let mut group_start = None;
-                            let max_mb = (160 * 1024 * 1024) as f64;
-                            // let max_mb = (240 * 1024 * 1024) as f64;
-                            // let max_mb = (2_u64 * 1024 * 1024 * 1024) as f64;
-
-                            for (range, is_resident) in group {
-                                if group_start.is_none() {
-                                    group_start = Some(range.start);
-                                }
-
-                                let size = range.end - range.start;
-                                if size < 4 * 4096 {
-                                    continue;
-                                }
-
-                                let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
-                                group_markup.push(html! {
-                                    <i class={format!("{:?}", is_resident)} style={style}>{
-                                        if size > 1024 * 1024 {
-                                            Cow::from(formatter(size).to_string())
-                                        } else {
-                                            Cow::from("")
-                                        }
-                                    }</i>
-                                })
-                            }
-
-                            html! {
+                    tracees.values().map(|tracee| {
+                        html! {
+                            <>
                                 <li>
-                                    <div class="group_header" style="display: block;">
-                                        { format!("{:#x}...", key) }
-                                    </div>
-                                    <div class="group">
-                                        { group_markup }
-                                    </div>
+                                    {"PID "}{tracee.tid.0}
+                                    <ul>
+                                        {{
+                                            let map = &tracee.map;
+                                            let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
+                                            let mut group_infos = HashMap::new();
+                                            for (key, group) in groups.into_iter() {
+                                                let mut group_start: Option<u64> = None;
+                                                let mut group_end: Option<u64> = None;
+                                                for (range, _is_resident) in group {
+                                                    if group_start.is_none() {
+                                                        group_start = Some(range.start);
+                                                    }
+                                                    group_end = Some(range.end);
+                                                }
+                                                let size = group_end.unwrap() - group_start.unwrap();
+                                                group_infos.insert(key, GroupInfo {
+                                                    start: group_start.unwrap(),
+                                                    size,
+                                                });
+                                            }
+
+                                            let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
+                                            let mut max_mb: u64 = 4 * 1024 * 1024;
+                                            while max_mb < largest_group {
+                                                max_mb *= 2;
+                                            }
+                                            let max_mb = max_mb as f64;
+
+                                            let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
+                                            groups.into_iter().map(
+                                                |(key, group)| {
+                                                    let mut group_markup = vec![];
+                                                    let mut group_start = None;
+
+                                                    for (range, mem_state) in group {
+                                                        if group_start.is_none() {
+                                                            group_start = Some(range.start);
+                                                        }
+
+                                                        let size = range.end - range.start;
+                                                        if size < 4 * 4096 {
+                                                            continue;
+                                                        }
+
+                                                        let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
+                                                        group_markup.push(html! {
+                                                            <i class={format!("{:?}", mem_state)} style={style}>{
+                                                                if matches!(mem_state, MemState::Resident) && size > 4 * 1024 * 1024 {
+                                                                    Cow::from(formatter(size).to_string())
+                                                                } else {
+                                                                    Cow::from("")
+                                                                }
+                                                            }</i>
+                                                        })
+                                                    }
+
+                                                    html! {
+                                                        <div class="group-outer">
+                                                            <div class="group-header">
+                                                                { format!("{:#x}", group_infos[&key].start) }
+                                                            </div>
+                                                            <div class="group">
+                                                                { group_markup }
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                }
+                                            ).collect::<Vec<_>>()
+                                        }}
+                                    </ul>
                                 </li>
-                            }
+                            </>
                         }
-                    ).collect::<Vec<_>>()
+                    }).collect::<Vec<_>>()
                 }}
             </ul>
         </>
+    }
+}
+
+fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: TraceeEvent) {
+    let tracee = tracees.entry(ev.tid).or_insert_with(|| TraceeState {
+        tid: ev.tid,
+        map: Default::default(),
+    });
+
+    match ev.payload {
+        TraceePayload::Map { range, resident } => {
+            tracee.map.insert(range, resident);
+        }
+        TraceePayload::Connected { .. } => {
+            // ignore
+        }
+        TraceePayload::PageIn { range } => {
+            tracee.map.insert(range, MemState::Resident);
+        }
+        TraceePayload::PageOut { range } => {
+            tracee.map.insert(range, MemState::NotResident);
+        }
+        TraceePayload::Unmap { range } => {
+            tracee.map.insert(range, MemState::Unmapped);
+        }
+        TraceePayload::Remap {
+            old_range,
+            new_range,
+        } => {
+            tracee.map.insert(old_range, MemState::Unmapped);
+            // FIXME: this is wrong but eh.
+            tracee.map.insert(new_range, MemState::Resident);
+        }
+        TraceePayload::Batch { batch } => {
+            for (range, mem_state) in batch.into_iter() {
+                tracee.map.insert(range, mem_state);
+            }
+        }
     }
 }
 

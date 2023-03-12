@@ -17,7 +17,6 @@ use axum::{
     response::IntoResponse,
 };
 use nix::unistd::Pid;
-// use humansize::{make_format, BINARY};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
 use rangemap::RangeMap;
@@ -135,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 struct TraceeState {
-    pid: TraceeId,
+    tid: TraceeId,
     map: MemMap,
     batch: MemMap,
     batch_size: usize,
@@ -146,7 +145,7 @@ struct TraceeState {
 impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
         let ev = TraceeEvent {
-            tid: self.pid,
+            tid: self.tid,
             payload,
         };
         let payload = bincode::serialize(&ev).unwrap();
@@ -208,7 +207,7 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
         debug!("{:?}", ev.blue());
 
         let tracee = tracees.entry(ev.tid).or_insert_with(|| TraceeState {
-            pid: ev.tid,
+            tid: ev.tid,
             map: Default::default(),
             batch: Default::default(),
             batch_size: 0,
