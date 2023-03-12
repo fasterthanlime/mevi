@@ -40,6 +40,7 @@ impl Tracer {
         }
         cmd.env("LD_PRELOAD", "target/release/libmevi_preload.so");
         unsafe {
+            // FIXME: do that from LD_PRELOAD?
             cmd.pre_exec(|| {
                 ptrace::traceme()?;
                 Ok(())
@@ -71,7 +72,18 @@ impl Tracer {
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            let wait_status = waitpid(None, None)?;
+            let wait_status = match waitpid(None, None) {
+                Ok(s) => s,
+                Err(e) => {
+                    if e == nix::errno::Errno::ECHILD {
+                        info!("no more children, exiting");
+                        std::process::exit(0);
+                    } else {
+                        panic!("waitpid failed: {}", e);
+                    }
+                }
+            };
+
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
@@ -81,7 +93,6 @@ impl Tracer {
                 }
                 WaitStatus::Exited(pid, status) => {
                     info!("{pid} exited with status {status}");
-                    warn!("TODO: exit if we don't have children left");
                 }
                 WaitStatus::PtraceSyscall(pid) => {
                     debug!("{pid} got a syscall");
@@ -115,7 +126,9 @@ impl Tracer {
                         ptrace::syscall(pid, None)?;
                     }
                 }
-                _ => continue,
+                other => {
+                    panic!("unexpected wait status: {:?}", other);
+                }
             }
         }
     }
