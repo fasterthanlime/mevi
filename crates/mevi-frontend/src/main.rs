@@ -136,95 +136,98 @@ fn app() -> Html {
     let formatter = make_format(BINARY);
     html! {
         <>
-            <ul style="font-family: monospace;">
-                <div>
-                    <span class="mem-stats virt"><span class="name">{"Virtual"}</span>{format!("{}", formatter(total_virt))}</span>
-                    <span class="mem-stats rss"><span class="name">{"Resident"}</span>{format!("{}", formatter(total_res))}</span>
-                </div>
-                {{
-                    tracees.values().map(|tracee| {
-                        html! {
-                            <>
-                                <div class="process">
-                                    <div class="process-info">
-                                        {"PID "}{tracee.tid.0}
-                                        {" "}
-                                        {tracee.cmdline.join(" ")}
-                                    </div>
-                                    {{
-                                        let map = &tracee.map;
-                                        let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
-                                        let mut group_infos = HashMap::new();
-                                        for (key, group) in groups.into_iter() {
-                                            let mut group_start: Option<u64> = None;
-                                            let mut group_end: Option<u64> = None;
-                                            for (range, _state) in group {
+            <div>
+                <span class="mem-stats virt"><span class="name">{"Virtual"}</span>{format!("{}", formatter(total_virt))}</span>
+                <span class="mem-stats rss"><span class="name">{"Resident"}</span>{format!("{}", formatter(total_res))}</span>
+            </div>
+            {{
+                tracees.values().map(|tracee| {
+                    html! {
+                        <>
+                            <div class="process">
+                                <div class="process-info">
+                                    <span class="pid">{tracee.tid.0}</span>
+                                    {
+                                        tracee.cmdline.iter().map(|arg| {
+                                            html! {
+                                                <span class="arg">{arg}</span>
+                                            }
+                                        }).collect::<Html>()
+                                    }
+                                </div>
+                                {{
+                                    let map = &tracee.map;
+                                    let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
+                                    let mut group_infos = HashMap::new();
+                                    for (key, group) in groups.into_iter() {
+                                        let mut group_start: Option<u64> = None;
+                                        let mut group_end: Option<u64> = None;
+                                        for (range, _state) in group {
+                                            if group_start.is_none() {
+                                                group_start = Some(range.start);
+                                            }
+                                            group_end = Some(range.end);
+                                        }
+                                        let size = group_end.unwrap() - group_start.unwrap();
+                                        group_infos.insert(key, GroupInfo {
+                                            start: group_start.unwrap(),
+                                            size,
+                                        });
+                                    }
+
+                                    let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
+                                    let mut max_mb: u64 = 4 * 1024 * 1024;
+                                    while max_mb < largest_group {
+                                        max_mb *= 2;
+                                    }
+                                    let max_mb = max_mb as f64;
+
+                                    let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
+                                    groups.into_iter().map(
+                                        |(key, group)| {
+                                            let mut group_markup = vec![];
+                                            let mut group_start = None;
+
+                                            for (range, mem_state) in group {
                                                 if group_start.is_none() {
                                                     group_start = Some(range.start);
                                                 }
-                                                group_end = Some(range.end);
-                                            }
-                                            let size = group_end.unwrap() - group_start.unwrap();
-                                            group_infos.insert(key, GroupInfo {
-                                                start: group_start.unwrap(),
-                                                size,
-                                            });
-                                        }
 
-                                        let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
-                                        let mut max_mb: u64 = 4 * 1024 * 1024;
-                                        while max_mb < largest_group {
-                                            max_mb *= 2;
-                                        }
-                                        let max_mb = max_mb as f64;
-
-                                        let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
-                                        groups.into_iter().map(
-                                            |(key, group)| {
-                                                let mut group_markup = vec![];
-                                                let mut group_start = None;
-
-                                                for (range, mem_state) in group {
-                                                    if group_start.is_none() {
-                                                        group_start = Some(range.start);
-                                                    }
-
-                                                    let size = range.end - range.start;
-                                                    if size < 4 * 4096 {
-                                                        continue;
-                                                    }
-
-                                                    let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
-                                                    group_markup.push(html! {
-                                                        <i class={format!("{:?}", mem_state)} style={style}>{
-                                                            if matches!(mem_state, MemState::Resident) && size > 4 * 1024 * 1024 {
-                                                                Cow::from(formatter(size).to_string())
-                                                            } else {
-                                                                Cow::from("")
-                                                            }
-                                                        }</i>
-                                                    })
+                                                let size = range.end - range.start;
+                                                if size < 4 * 4096 {
+                                                    continue;
                                                 }
 
-                                                html! {
-                                                    <div class="group-outer">
-                                                        <div class="group-header">
-                                                            { format!("{:#x}", group_infos[&key].start) }
-                                                        </div>
-                                                        <div class="group">
-                                                            { group_markup }
-                                                        </div>
+                                                let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
+                                                group_markup.push(html! {
+                                                    <i class={format!("{:?}", mem_state)} style={style}>{
+                                                        if matches!(mem_state, MemState::Resident) && size > 4 * 1024 * 1024 {
+                                                            Cow::from(formatter(size).to_string())
+                                                        } else {
+                                                            Cow::from("")
+                                                        }
+                                                    }</i>
+                                                })
+                                            }
+
+                                            html! {
+                                                <div class="group-outer">
+                                                    <div class="group-header">
+                                                        { format!("{:#x}", group_infos[&key].start) }
                                                     </div>
-                                                }
+                                                    <div class="group">
+                                                        { group_markup }
+                                                    </div>
+                                                </div>
                                             }
-                                        ).collect::<Vec<_>>()
-                                    }}
-                                </div>
-                            </>
-                        }
-                    }).collect::<Vec<_>>()
-                }}
-            </ul>
+                                        }
+                                    ).collect::<Vec<_>>()
+                                }}
+                            </div>
+                        </>
+                    }
+                }).collect::<Vec<_>>()
+            }}
         </>
     }
 }
