@@ -93,7 +93,7 @@ fn app() -> Html {
                 let mut tracees_acc = HashMap::new();
 
                 gloo_console::log!("Connecting to WebSocket...");
-                let ws = WebSocket::open("ws://localhost:5001/ws").unwrap();
+                let ws = WebSocket::open("ws://localhost:5001/stream").unwrap();
                 gloo_console::log!("Connected to WebSocket");
                 let (write, mut read) = ws.split();
                 drop(write);

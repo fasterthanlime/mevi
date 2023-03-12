@@ -9,7 +9,7 @@ use std::{
 
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use userfaultfd::Uffd;
 
 use crate::{MeviEvent, TraceeId, TraceePayload};
@@ -31,6 +31,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned())
             .collect();
+        info!("cmdline for {tid:?} is {cmdline:?}");
 
         tx.send(MeviEvent::TraceeEvent(
             tid,

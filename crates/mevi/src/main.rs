@@ -135,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ev_tx: tx3.clone(),
     };
     let router = axum::Router::new()
-        .route("/ws", axum::routing::get(ws))
+        .route("/stream", axum::routing::get(stream))
         .with_state(rs);
     let addr = "127.0.0.1:5001".parse().unwrap();
     let server = axum::Server::bind(&addr).serve(router.into_make_service());
@@ -261,8 +261,9 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 tracee.register(&range);
                 tracee.map.insert(range, state);
             }
-            TraceePayload::Connected { uffd, .. } => {
+            TraceePayload::Connected { uffd, cmdline } => {
                 tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
+                tracee.cmdline = cmdline;
             }
             TraceePayload::PageIn { range } => {
                 tracee.map.insert(range, MemState::Resident);
@@ -296,7 +297,7 @@ struct RouterState {
     ev_tx: mpsc::SyncSender<MeviEvent>,
 }
 
-async fn ws(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
+async fn stream(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
     upgrade.on_upgrade(move |ws| {
         let payload_rx = rs.payload_tx.subscribe();
         _ = rs.ev_tx.send(MeviEvent::Snapshot(vec![]));
