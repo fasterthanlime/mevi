@@ -28,9 +28,16 @@ struct GroupInfo {
 struct TraceeId(u64);
 
 #[derive(Debug, Deserialize)]
-struct TraceeEvent {
+enum MeviEvent {
+    Snapshot(Vec<TraceeSnapshot>),
+    TraceeEvent(TraceeId, TraceePayload),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TraceeSnapshot {
     tid: TraceeId,
-    payload: TraceePayload,
+    cmdline: Vec<String>,
+    map: MemMap,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +55,7 @@ enum TraceePayload {
     },
     Connected {
         _uffd: u64,
+        cmdline: Vec<String>,
     },
     PageIn {
         range: Range<u64>,
@@ -71,6 +79,7 @@ enum TraceePayload {
 struct TraceeState {
     tid: TraceeId,
     map: MemMap,
+    cmdline: Vec<String>,
 }
 
 #[function_component(App)]
@@ -97,7 +106,7 @@ fn app() -> Html {
                                 gloo_console::log!(format!("text message: {t}"))
                             }
                             Message::Bytes(b) => {
-                                let ev: TraceeEvent = bincode::deserialize(&b).unwrap();
+                                let ev: MeviEvent = bincode::deserialize(&b).unwrap();
                                 // gloo_console::log!(format!("{:?}", ev));
 
                                 apply_ev(&mut tracees_acc, ev);
@@ -139,6 +148,8 @@ fn app() -> Html {
                                 <div class="process">
                                     <div class="process-info">
                                         {"PID "}{tracee.tid.0}
+                                        {" "}
+                                        {tracee.cmdline.join(" ")}
                                     </div>
                                     {{
                                         let map = &tracee.map;
@@ -218,18 +229,37 @@ fn app() -> Html {
     }
 }
 
-fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: TraceeEvent) {
-    let tracee = tracees.entry(ev.tid).or_insert_with(|| TraceeState {
-        tid: ev.tid,
+fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
+    let (tid, payload) = match ev {
+        MeviEvent::Snapshot(snap_tracees) => {
+            for snap_tracee in snap_tracees {
+                let tracee = tracees
+                    .entry(snap_tracee.tid)
+                    .or_insert_with(|| TraceeState {
+                        tid: snap_tracee.tid,
+                        map: Default::default(),
+                        cmdline: Default::default(),
+                    });
+                tracee.cmdline = snap_tracee.cmdline;
+                tracee.map = snap_tracee.map;
+            }
+            return;
+        }
+        MeviEvent::TraceeEvent(tid, ev) => (tid, ev),
+    };
+
+    let tracee = tracees.entry(tid).or_insert_with(|| TraceeState {
+        tid,
         map: Default::default(),
+        cmdline: Default::default(),
     });
 
-    match ev.payload {
+    match payload {
         TraceePayload::Map { range, state, .. } => {
             tracee.map.insert(range, state);
         }
-        TraceePayload::Connected { .. } => {
-            // ignore
+        TraceePayload::Connected { cmdline, .. } => {
+            tracee.cmdline = cmdline;
         }
         TraceePayload::PageIn { range } => {
             tracee.map.insert(range, MemState::Resident);

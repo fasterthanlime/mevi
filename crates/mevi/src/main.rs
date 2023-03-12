@@ -56,9 +56,9 @@ impl From<TraceeId> for Pid {
 }
 
 #[derive(Debug, Serialize)]
-struct TraceeEvent {
-    tid: TraceeId,
-    payload: TraceePayload,
+enum MeviEvent {
+    Snapshot(Vec<TraceeSnapshot>),
+    TraceeEvent(TraceeId, TraceePayload),
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +74,13 @@ impl Clone for MapGuard {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct TraceeSnapshot {
+    tid: TraceeId,
+    cmdline: Vec<String>,
+    map: MemMap,
+}
+
+#[derive(Debug, Clone, Serialize)]
 enum TraceePayload {
     Map {
         range: Range<usize>,
@@ -82,6 +89,7 @@ enum TraceePayload {
     },
     Connected {
         uffd: RawFd,
+        cmdline: Vec<String>,
     },
     PageIn {
         range: Range<usize>,
@@ -113,21 +121,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::remove_file(SOCK_PATH).ok();
     let listener = UnixListener::bind(SOCK_PATH).unwrap();
 
-    let (tx, rx) = mpsc::sync_channel::<TraceeEvent>(16);
+    let (tx, rx) = mpsc::sync_channel::<MeviEvent>(16);
     let tx2 = tx.clone();
+    let tx3 = tx.clone();
 
     std::thread::spawn(move || userfault::run(tx, listener));
     std::thread::spawn(move || tracer::run(tx2));
 
-    let (w_tx, _) = broadcast::channel(16);
+    let (payload_tx, _) = broadcast::channel(16);
 
+    let rs = RouterState {
+        payload_tx: payload_tx.clone(),
+        ev_tx: tx3.clone(),
+    };
     let router = axum::Router::new()
         .route("/ws", axum::routing::get(ws))
-        .with_state(w_tx.clone());
+        .with_state(rs);
     let addr = "127.0.0.1:5001".parse().unwrap();
     let server = axum::Server::bind(&addr).serve(router.into_make_service());
 
-    std::thread::spawn(move || relay(rx, w_tx));
+    std::thread::spawn(move || relay(rx, payload_tx));
 
     server.await.unwrap();
     Ok(())
@@ -135,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct TraceeState {
     tid: TraceeId,
+    cmdline: Vec<String>,
     map: MemMap,
     batch: MemMap,
     batch_size: usize,
@@ -144,10 +158,7 @@ struct TraceeState {
 
 impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
-        let ev = TraceeEvent {
-            tid: self.tid,
-            payload,
-        };
+        let ev = MeviEvent::TraceeEvent(self.tid, payload);
         let payload = bincode::serialize(&ev).unwrap();
         _ = self.w_tx.blocking_send(payload);
     }
@@ -180,7 +191,7 @@ impl TraceeState {
     }
 }
 
-fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
+fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec<u8>>) {
     let mut tracees: HashMap<TraceeId, TraceeState> = Default::default();
     let interval = Duration::from_millis(150);
 
@@ -188,7 +199,7 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
         let mut first = true;
         let ev = loop {
             if first {
-                match rx.recv_timeout(interval) {
+                match ev_rx.recv_timeout(interval) {
                     Ok(ev) => break ev,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         first = false;
@@ -202,21 +213,39 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
                 for tracee in tracees.values_mut() {
                     tracee.flush();
                 }
-                break rx.recv().unwrap();
+                break ev_rx.recv().unwrap();
             }
         };
         debug!("{:?}", ev.blue());
 
-        let tracee = tracees.entry(ev.tid).or_insert_with(|| TraceeState {
-            tid: ev.tid,
+        let (tid, payload) = match ev {
+            MeviEvent::Snapshot(mut snap_tracees) => {
+                for tracee in tracees.values_mut() {
+                    tracee.flush();
+                    snap_tracees.push(TraceeSnapshot {
+                        tid: tracee.tid,
+                        cmdline: tracee.cmdline.clone(),
+                        map: tracee.map.clone(),
+                    });
+                }
+                _ = payload_tx
+                    .blocking_send(bincode::serialize(&MeviEvent::Snapshot(snap_tracees)).unwrap());
+                continue;
+            }
+            MeviEvent::TraceeEvent(tid, ev) => (tid, ev),
+        };
+
+        let tracee = tracees.entry(tid).or_insert_with(|| TraceeState {
+            tid,
+            cmdline: Default::default(),
             map: Default::default(),
             batch: Default::default(),
             batch_size: 0,
             uffd: None,
-            w_tx: w_tx.clone(),
+            w_tx: payload_tx.clone(),
         });
 
-        match &ev.payload {
+        match &payload {
             TraceePayload::PageIn { range } => tracee.accumulate(range.clone(), MemState::Resident),
             TraceePayload::PageOut { range } => {
                 tracee.accumulate(range.clone(), MemState::NotResident)
@@ -227,12 +256,12 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
             }
         };
 
-        match ev.payload {
+        match payload {
             TraceePayload::Map { range, state, .. } => {
                 tracee.register(&range);
                 tracee.map.insert(range, state);
             }
-            TraceePayload::Connected { uffd } => {
+            TraceePayload::Connected { uffd, .. } => {
                 tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
             }
             TraceePayload::PageIn { range } => {
@@ -261,16 +290,23 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
     }
 }
 
-async fn ws(
-    State(tx): State<broadcast::Sender<Vec<u8>>>,
-    upgrade: WebSocketUpgrade,
-) -> impl IntoResponse {
-    upgrade.on_upgrade(move |ws| handle_ws(tx.subscribe(), ws))
+#[derive(Clone)]
+struct RouterState {
+    payload_tx: broadcast::Sender<Vec<u8>>,
+    ev_tx: mpsc::SyncSender<MeviEvent>,
 }
 
-async fn handle_ws(mut rx: broadcast::Receiver<Vec<u8>>, mut ws: WebSocket) {
+async fn ws(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
+    upgrade.on_upgrade(move |ws| {
+        let payload_rx = rs.payload_tx.subscribe();
+        _ = rs.ev_tx.send(MeviEvent::Snapshot(vec![]));
+        handle_ws(payload_rx, ws)
+    })
+}
+
+async fn handle_ws(mut payload_rx: broadcast::Receiver<Vec<u8>>, mut ws: WebSocket) {
     loop {
-        let payload = rx.recv().await.unwrap();
+        let payload = payload_rx.recv().await.unwrap();
         ws.send(Message::Binary(payload)).await.unwrap();
     }
 }

@@ -14,14 +14,14 @@ use nix::{
 use owo_colors::OwoColorize;
 use tracing::{debug, info, trace};
 
-use crate::{MapGuard, MemState, TraceeEvent, TraceeId, TraceePayload};
+use crate::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
 
-pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>) {
+pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>) {
     Tracer::new(tx).unwrap().run().unwrap();
 }
 
 struct Tracer {
-    tx: mpsc::SyncSender<TraceeEvent>,
+    tx: mpsc::SyncSender<MeviEvent>,
     tracees: HashMap<TraceeId, Tracee>,
 }
 
@@ -31,7 +31,7 @@ struct Mapped {
 }
 
 impl Tracer {
-    fn new(tx: mpsc::SyncSender<TraceeEvent>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -114,14 +114,14 @@ impl Tracer {
                         tracee.was_in_syscall = false;
                         if let Some(Mapped { range, resident }) = tracee.on_sys_exit()? {
                             let (tx, rx) = mpsc::channel();
-                            let ev = TraceeEvent {
+                            let ev = MeviEvent::TraceeEvent(
                                 tid,
-                                payload: TraceePayload::Map {
+                                TraceePayload::Map {
                                     range,
                                     state: resident,
                                     _guard: MapGuard { _inner: Some(tx) },
                                 },
-                            };
+                            );
                             self.tx.send(ev).unwrap();
 
                             // this will fail, because it's been dropped. but it'll
