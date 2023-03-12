@@ -12,7 +12,7 @@ use nix::{
     unistd::Pid,
 };
 use owo_colors::OwoColorize;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
 
@@ -99,7 +99,11 @@ impl Tracer {
                     continue;
                 }
                 WaitStatus::Exited(pid, status) => {
-                    info!("{pid} exited with status {status}");
+                    if status == 0 {
+                        debug!("{pid} exited with status {status}");
+                    } else {
+                        warn!("{pid} exited with non-zero status {status}");
+                    }
                     let ev = MeviEvent::TraceeEvent(pid.into(), TraceePayload::Exit);
                     self.tx.send(ev).unwrap();
                 }
