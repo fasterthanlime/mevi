@@ -16,6 +16,7 @@ use axum::{
     },
     response::IntoResponse,
 };
+use color_eyre::Result;
 use nix::unistd::Pid;
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
@@ -113,7 +114,9 @@ enum TraceePayload {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
+    color_eyre::install()?;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()

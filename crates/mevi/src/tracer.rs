@@ -3,6 +3,7 @@ use std::{
     sync::mpsc,
 };
 
+use color_eyre::Result;
 use nix::{
     sys::{
         ptrace,
@@ -31,7 +32,7 @@ struct Mapped {
 }
 
 impl Tracer {
-    fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -40,7 +41,15 @@ impl Tracer {
         for arg in args {
             cmd.arg(arg);
         }
-        cmd.env("LD_PRELOAD", "target/release/libmevi_preload.so");
+
+        let exe_path = std::fs::canonicalize(std::env::current_exe()?)?;
+        debug!("exe_path = {}", exe_path.display());
+        let exe_dir_path = exe_path.parent().unwrap();
+        debug!("exe_dir_path = {}", exe_dir_path.display());
+        let preload_path = exe_dir_path.join("libmevi_preload.so");
+        debug!("Setting LD_PRELOAD to {}", preload_path.display());
+
+        cmd.env("LD_PRELOAD", preload_path);
         unsafe {
             cmd.pre_exec(|| {
                 ptrace::traceme()?;
@@ -71,7 +80,7 @@ impl Tracer {
         })
     }
 
-    fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn run(&mut self) -> Result<()> {
         loop {
             let wait_status = match waitpid(None, None) {
                 Ok(s) => s,
@@ -133,7 +142,14 @@ impl Tracer {
                             // wait until it's dropped, which is what we want
                             _ = rx.recv();
                         }
-                        ptrace::syscall(pid, None)?;
+                        if let Err(e) = ptrace::syscall(pid, None) {
+                            if e == nix::errno::Errno::ESRCH {
+                                // the process has exited, we don't care
+                                info!(
+                                    "{pid} exited while we were spying on its syscalls, that's ok"
+                                );
+                            }
+                        }
                     } else {
                         tracee.was_in_syscall = true;
                         ptrace::syscall(pid, None)?;
@@ -167,7 +183,7 @@ struct Tracee {
 }
 
 impl Tracee {
-    fn on_sys_exit(&mut self) -> Result<Option<Mapped>, Box<dyn std::error::Error>> {
+    fn on_sys_exit(&mut self) -> Result<Option<Mapped>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
