@@ -1,10 +1,12 @@
 use std::{
-    collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc,
+    borrow::Cow, collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command,
+    sync::mpsc,
 };
 
 use nix::{
     sys::{
         ptrace,
+        signal::Signal,
         wait::{waitpid, WaitStatus},
     },
     unistd::Pid,
@@ -88,14 +90,20 @@ impl Tracer {
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
                     warn!("{pid} caught sig {sig}");
-                    ptrace::syscall(pid, sig)?;
+                    if sig == Signal::SIGTRAP {
+                        // probably ptrace stuff?
+                        ptrace::syscall(pid, None)?;
+                    } else {
+                        // probably not ptrace stuff, forward the signal?
+                        ptrace::syscall(pid, sig)?;
+                    }
                     continue;
                 }
                 WaitStatus::Exited(pid, status) => {
                     info!("{pid} exited with status {status}");
                 }
                 WaitStatus::PtraceSyscall(pid) => {
-                    debug!("{pid} got a syscall");
+                    debug!("{pid} in sys_enter / sys_exit");
                     let tid: TraceeId = pid.into();
                     let tracee = self.tracees.entry(tid).or_insert_with(|| Tracee {
                         was_in_syscall: false,
@@ -125,6 +133,19 @@ impl Tracer {
                         tracee.was_in_syscall = true;
                         ptrace::syscall(pid, None)?;
                     }
+                }
+                WaitStatus::PtraceEvent(pid, sig, event) => {
+                    let event_name: Cow<'static, str> = match event {
+                        libc::PTRACE_EVENT_CLONE => "clone".into(),
+                        libc::PTRACE_EVENT_FORK => "fork".into(),
+                        libc::PTRACE_EVENT_VFORK => "vfork".into(),
+                        other => format!("unknown event {}", other).into(),
+                    };
+                    info!("{pid} got event {event_name} with sig {sig}");
+                    ptrace::syscall(pid, None)?;
+                }
+                WaitStatus::Signaled(pid, signal, core_dump) => {
+                    info!("{pid} was terminated with signal {signal} with, WCOREDUMP({core_dump})");
                 }
                 other => {
                     panic!("unexpected wait status: {:?}", other);
