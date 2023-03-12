@@ -42,17 +42,23 @@ const SOCK_PATH: &str = "/tmp/mevi.sock";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
-struct TraceePid(u64);
+struct TraceeId(u64);
 
-impl From<Pid> for TraceePid {
+impl From<Pid> for TraceeId {
     fn from(pid: Pid) -> Self {
         Self(pid.as_raw() as _)
     }
 }
 
+impl From<TraceeId> for Pid {
+    fn from(id: TraceeId) -> Self {
+        Self::from_raw(id.0 as _)
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct TraceeEvent {
-    pid: TraceePid,
+    tid: TraceeId,
     payload: TraceePayload,
 }
 
@@ -72,7 +78,7 @@ impl Clone for MapGuard {
 enum TraceePayload {
     Map {
         range: Range<usize>,
-        resident: MemState,
+        state: MemState,
         _guard: MapGuard,
     },
     Connected {
@@ -129,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 struct TraceeState {
-    pid: TraceePid,
+    pid: TraceeId,
     map: MemMap,
     batch: MemMap,
     batch_size: usize,
@@ -140,7 +146,7 @@ struct TraceeState {
 impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
         let ev = TraceeEvent {
-            pid: self.pid,
+            tid: self.pid,
             payload,
         };
         let payload = bincode::serialize(&ev).unwrap();
@@ -153,13 +159,14 @@ impl TraceeState {
         }
 
         self.batch_size = 0;
-        self.send_ev(TraceePayload::Batch {
-            batch: std::mem::take(&mut self.batch),
-        });
+        let batch = std::mem::take(&mut self.batch);
+        self.send_ev(TraceePayload::Batch { batch });
     }
 
+    const BATCH_SIZE: usize = 128;
+
     fn accumulate(&mut self, range: Range<usize>, state: MemState) {
-        if self.batch_size > 128 {
+        if self.batch_size > Self::BATCH_SIZE {
             self.flush();
         }
 
@@ -173,8 +180,8 @@ impl TraceeState {
     }
 }
 
-fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) {
-    let mut tracees: HashMap<TraceePid, TraceeState> = Default::default();
+fn relay(rx: mpsc::Receiver<TraceeEvent>, w_tx: broadcast::Sender<Vec<u8>>) {
+    let mut tracees: HashMap<TraceeId, TraceeState> = Default::default();
     let interval = Duration::from_millis(150);
 
     loop {
@@ -200,10 +207,8 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
         };
         debug!("{:?}", ev.blue());
 
-        const COALESCE_THRESHOLD: usize = 128;
-
-        let tracee = tracees.entry(ev.pid).or_insert_with(|| TraceeState {
-            pid: ev.pid,
+        let tracee = tracees.entry(ev.tid).or_insert_with(|| TraceeState {
+            pid: ev.tid,
             map: Default::default(),
             batch: Default::default(),
             batch_size: 0,
@@ -216,18 +221,16 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
             TraceePayload::PageOut { range } => {
                 tracee.accumulate(range.clone(), MemState::NotResident)
             }
-            other => {
+            payload => {
                 tracee.flush();
-                tracee.send_ev(ev.payload);
+                tracee.send_ev(payload.clone());
             }
         };
 
         match ev.payload {
-            TraceePayload::Map {
-                range, resident, ..
-            } => {
+            TraceePayload::Map { range, state, .. } => {
                 tracee.register(&range);
-                tracee.map.insert(range, resident);
+                tracee.map.insert(range, state);
             }
             TraceePayload::Connected { uffd } => {
                 tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });

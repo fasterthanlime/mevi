@@ -12,36 +12,39 @@ use passfd::FdPassingExt;
 use tracing::{debug, warn};
 use userfaultfd::Uffd;
 
-use crate::{TraceeEvent, TraceePayload, TraceePid};
+use crate::{TraceeEvent, TraceeId, TraceePayload};
 
 pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
     loop {
-        let (stream, _) = listener.accept().unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
 
         let mut pid_bytes = [0u8; 8];
         stream.read_exact(&mut pid_bytes).unwrap();
 
-        let pid = TraceePid(u64::from_be_bytes(pid_bytes));
+        let pid = TraceeId(u64::from_be_bytes(pid_bytes));
 
         let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
         debug!("From {pid:?}, got uffd {}", uffd.as_raw_fd());
         tx.send(TraceeEvent {
-            pid,
+            tid: pid,
             payload: TraceePayload::Connected {
                 uffd: uffd.as_raw_fd(),
             },
         })
         .unwrap();
 
-        std::thread::spawn(move || handle(tx.clone(), pid, uffd));
+        std::thread::spawn({
+            let tx = tx.clone();
+            move || handle(tx, pid, uffd)
+        });
     }
 }
 
-fn handle(tx: mpsc::SyncSender<TraceeEvent>, pid: TraceePid, mut uffd: Uffd) {
+fn handle(tx: mpsc::SyncSender<TraceeEvent>, pid: TraceeId, uffd: Uffd) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
-    let mut send_ev = |payload: TraceePayload| {
-        tx.send(TraceeEvent { pid, payload }).unwrap();
+    let send_ev = |payload: TraceePayload| {
+        tx.send(TraceeEvent { tid: pid, payload }).unwrap();
     };
 
     loop {

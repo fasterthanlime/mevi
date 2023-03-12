@@ -1,26 +1,26 @@
-use std::{ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc};
+use std::{
+    collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc,
+};
 
 use nix::{
     sys::{
-        ptrace::{self},
-        signal::Signal,
+        ptrace,
         wait::{waitpid, WaitStatus},
     },
     unistd::Pid,
 };
 use owo_colors::OwoColorize;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
-use crate::{MapGuard, MemState, TraceePayload};
+use crate::{MapGuard, MemState, TraceeEvent, TraceeId, TraceePayload};
 
-pub(crate) fn run(tx: mpsc::SyncSender<TraceePayload>) {
-    Tracee::new(tx).unwrap().run().unwrap();
+pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>) {
+    Tracer::new(tx).unwrap().run().unwrap();
 }
 
-struct Tracee {
-    tx: mpsc::SyncSender<TraceePayload>,
-    pid: Pid,
-    heap_range: Option<Range<usize>>,
+struct Tracer {
+    tx: mpsc::SyncSender<TraceeEvent>,
+    tracees: HashMap<TraceeId, Tracee>,
 }
 
 struct Mapped {
@@ -28,8 +28,8 @@ struct Mapped {
     resident: MemState,
 }
 
-impl Tracee {
-    fn new(tx: mpsc::SyncSender<TraceePayload>) -> Result<Self, Box<dyn std::error::Error>> {
+impl Tracer {
+    fn new(tx: mpsc::SyncSender<TraceeEvent>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -54,57 +54,82 @@ impl Tracee {
         let res = waitpid(pid, None)?;
         trace!("first waitpid: {res:?}");
 
+        ptrace::setoptions(
+            pid,
+            ptrace::Options::PTRACE_O_TRACESYSGOOD
+                | ptrace::Options::PTRACE_O_TRACECLONE
+                | ptrace::Options::PTRACE_O_TRACEFORK
+                | ptrace::Options::PTRACE_O_TRACEVFORK,
+        )?;
+        ptrace::syscall(pid, None)?;
+
         Ok(Self {
             tx,
-            pid,
-            heap_range: None,
+            tracees: Default::default(),
         })
     }
 
     fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            self.syscall_step()?;
-            self.syscall_step()?;
-
-            if let Some(Mapped { range, resident }) = self.on_sys_exit()? {
-                let (tx, rx) = mpsc::channel();
-                self.tx
-                    .send(TraceePayload::Map {
-                        range,
-                        resident,
-                        _guard: MapGuard { _inner: Some(tx) },
-                    })
-                    .unwrap();
-
-                // this will fail, because it's been dropped. but it'll
-                // wait until it's dropped, which is what we want
-                _ = rx.recv();
-            }
-        }
-    }
-
-    fn syscall_step(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        loop {
-            ptrace::syscall(self.pid, None)?;
-            let wait_status = waitpid(self.pid, None)?;
+            let wait_status = waitpid(None, None)?;
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
-                WaitStatus::Stopped(_, Signal::SIGTRAP) => break Ok(()),
-                WaitStatus::Stopped(_, _other_sig) => {
-                    warn!("caught other sig: {_other_sig}");
+                WaitStatus::Stopped(pid, sig) => {
+                    warn!("{pid} caught sig {sig}");
+                    ptrace::syscall(pid, sig)?;
                     continue;
                 }
-                WaitStatus::Exited(_, status) => {
-                    info!("Child exited with status {status}");
-                    std::process::exit(status);
+                WaitStatus::Exited(pid, status) => {
+                    info!("{pid} exited with status {status}");
+                    warn!("TODO: exit if we don't have children left");
+                }
+                WaitStatus::PtraceSyscall(pid) => {
+                    debug!("{pid} got a syscall");
+                    let tid: TraceeId = pid.into();
+                    let tracee = self.tracees.entry(tid).or_insert_with(|| Tracee {
+                        was_in_syscall: false,
+                        tid,
+                        heap_range: None,
+                    });
+                    if tracee.was_in_syscall {
+                        tracee.was_in_syscall = false;
+                        if let Some(Mapped { range, resident }) = tracee.on_sys_exit()? {
+                            let (tx, rx) = mpsc::channel();
+                            let ev = TraceeEvent {
+                                tid,
+                                payload: TraceePayload::Map {
+                                    range,
+                                    state: resident,
+                                    _guard: MapGuard { _inner: Some(tx) },
+                                },
+                            };
+                            self.tx.send(ev).unwrap();
+
+                            // this will fail, because it's been dropped. but it'll
+                            // wait until it's dropped, which is what we want
+                            _ = rx.recv();
+                        }
+                        ptrace::syscall(pid, None)?;
+                    } else {
+                        tracee.was_in_syscall = true;
+                        ptrace::syscall(pid, None)?;
+                    }
                 }
                 _ => continue,
             }
         }
     }
+}
 
+struct Tracee {
+    was_in_syscall: bool,
+    tid: TraceeId,
+    heap_range: Option<Range<usize>>,
+}
+
+impl Tracee {
     fn on_sys_exit(&mut self) -> Result<Option<Mapped>, Box<dyn std::error::Error>> {
-        let regs = ptrace::getregs(self.pid)?;
+        let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
 
