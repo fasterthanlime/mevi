@@ -1,4 +1,5 @@
 use std::{
+    io::Read,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::net::UnixListener,
@@ -8,20 +9,40 @@ use std::{
 
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use tracing::warn;
+use tracing::{debug, warn};
 use userfaultfd::Uffd;
 
-use crate::TraceePayload;
+use crate::{TraceeEvent, TraceePayload, TraceePid};
 
-pub(crate) fn run(tx: mpsc::SyncSender<TraceePayload>, listener: UnixListener) {
+pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
+    loop {
+        let (stream, _) = listener.accept().unwrap();
+
+        let mut pid_bytes = [0u8; 8];
+        stream.read_exact(&mut pid_bytes).unwrap();
+
+        let pid = TraceePid(u64::from_be_bytes(pid_bytes));
+
+        let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
+        debug!("From {pid:?}, got uffd {}", uffd.as_raw_fd());
+        tx.send(TraceeEvent {
+            pid,
+            payload: TraceePayload::Connected {
+                uffd: uffd.as_raw_fd(),
+            },
+        })
+        .unwrap();
+
+        std::thread::spawn(move || handle(tx.clone(), pid, uffd));
+    }
+}
+
+fn handle(tx: mpsc::SyncSender<TraceeEvent>, pid: TraceePid, mut uffd: Uffd) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
-    let (stream, _) = listener.accept().unwrap();
-    let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-    tx.send(TraceePayload::Connected {
-        uffd: uffd.as_raw_fd(),
-    })
-    .unwrap();
+    let mut send_ev = |payload: TraceePayload| {
+        tx.send(TraceeEvent { pid, payload }).unwrap();
+    };
 
     loop {
         let event = uffd.read_event().unwrap().unwrap();
@@ -50,30 +71,27 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceePayload>, listener: UnixListener) {
                     }
                 }
                 let addr = addr as usize;
-                tx.send(TraceePayload::PageIn {
+                send_ev(TraceePayload::PageIn {
                     range: addr..addr + page_size,
-                })
-                .unwrap();
+                });
             }
             userfaultfd::Event::Remap { from, to, len } => {
                 let from = from as usize;
                 let to = to as usize;
-                tx.send(TraceePayload::Remap {
+                send_ev(TraceePayload::Remap {
                     old_range: from..from + len,
                     new_range: to..to + len,
-                })
-                .unwrap();
+                });
             }
             userfaultfd::Event::Remove { start, end } => {
                 let start = start as usize;
                 let end = end as usize;
-                tx.send(TraceePayload::PageOut { range: start..end })
-                    .unwrap();
+                send_ev(TraceePayload::PageOut { range: start..end });
             }
             userfaultfd::Event::Unmap { start, end } => {
                 let start = start as usize;
                 let end = end as usize;
-                tx.send(TraceePayload::Unmap { range: start..end }).unwrap();
+                send_ev(TraceePayload::Unmap { range: start..end });
             }
             _ => {
                 warn!("Unexpected event: {:?}", event);

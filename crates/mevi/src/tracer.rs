@@ -11,7 +11,7 @@ use nix::{
 use owo_colors::OwoColorize;
 use tracing::{info, trace, warn};
 
-use crate::{MemState, TraceePayload};
+use crate::{MapGuard, MemState, TraceePayload};
 
 pub(crate) fn run(tx: mpsc::SyncSender<TraceePayload>) {
     Tracee::new(tx).unwrap().run().unwrap();
@@ -72,7 +72,7 @@ impl Tracee {
                     .send(TraceePayload::Map {
                         range,
                         resident,
-                        _guard: Some(tx),
+                        _guard: MapGuard { _inner: Some(tx) },
                     })
                     .unwrap();
 
