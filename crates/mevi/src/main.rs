@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ops::Range,
     os::{
         fd::{FromRawFd, RawFd},
@@ -15,6 +16,7 @@ use axum::{
     },
     response::IntoResponse,
 };
+use nix::unistd::Pid;
 // use humansize::{make_format, BINARY};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
@@ -28,28 +30,50 @@ mod tracer;
 mod userfault;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-enum IsResident {
-    Yes,
-    No,
+enum MemState {
+    Resident,
+    NotResident,
     Unmapped,
 }
 
-type MemMap = RangeMap<usize, IsResident>;
+type MemMap = RangeMap<usize, MemState>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
-enum Acc {
-    PageIn { range_map: MemMap, count: usize },
-    PageOut { range_map: MemMap, count: usize },
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+struct TraceePid(u64);
+
+impl From<Pid> for TraceePid {
+    fn from(pid: Pid) -> Self {
+        Self(pid.as_raw() as _)
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-enum TraceeEvent {
+#[derive(Debug, Serialize)]
+struct TraceeEvent {
+    pid: TraceePid,
+    payload: TraceePayload,
+}
+
+#[derive(Debug, Serialize)]
+struct MapGuard {
+    #[serde(skip)]
+    _inner: Option<mpsc::Sender<()>>,
+}
+
+impl Clone for MapGuard {
+    fn clone(&self) -> Self {
+        Self { _inner: None }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+enum TraceePayload {
     Map {
         range: Range<usize>,
-        resident: IsResident,
-        #[serde(skip)]
-        _tx: Option<mpsc::Sender<()>>,
+        resident: MemState,
+        _guard: MapGuard,
     },
     Connected {
         uffd: RawFd,
@@ -67,11 +91,8 @@ enum TraceeEvent {
         old_range: Range<usize>,
         new_range: Range<usize>,
     },
-    PageInAcc {
-        range_map: MemMap,
-    },
-    PageOutAcc {
-        range_map: MemMap,
+    Batch {
+        batch: MemMap,
     },
 }
 
@@ -107,30 +128,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) {
-    let mut child_uffd: Option<Uffd> = None;
+struct TraceeState {
+    pid: TraceePid,
+    map: MemMap,
+    batch: MemMap,
+    batch_size: usize,
+    uffd: Option<Uffd>,
+    w_tx: broadcast::Sender<Vec<u8>>,
+}
 
-    let mut map: MemMap = Default::default();
-    let mut acc: Option<Acc> = None;
-
-    let interval = Duration::from_millis(150);
-
-    let send_ev = |w_tx: &mut broadcast::Sender<Vec<u8>>, ev: &TraceeEvent| {
+impl TraceeState {
+    fn send_ev(&mut self, payload: TraceePayload) {
+        let ev = TraceeEvent {
+            pid: self.pid,
+            payload,
+        };
         let payload = bincode::serialize(&ev).unwrap();
-        _ = w_tx.blocking_send(payload);
-    };
+        _ = self.w_tx.blocking_send(payload);
+    }
 
-    let flush_acc = |w_tx: &mut broadcast::Sender<Vec<u8>>, acc: &mut Option<Acc>| {
-        if let Some(acc) = acc.take() {
-            send_ev(
-                w_tx,
-                &match acc {
-                    Acc::PageIn { range_map, .. } => TraceeEvent::PageInAcc { range_map },
-                    Acc::PageOut { range_map, .. } => TraceeEvent::PageOutAcc { range_map },
-                },
-            )
+    fn flush(&mut self) {
+        if self.batch_size == 0 {
+            return;
         }
-    };
+
+        self.batch_size = 0;
+        self.send_ev(TraceePayload::Batch {
+            batch: std::mem::take(&mut self.batch),
+        });
+    }
+
+    fn accumulate(&mut self, range: Range<usize>, state: MemState) {
+        if self.batch_size > 128 {
+            self.flush();
+        }
+
+        self.batch.insert(range, state);
+    }
+
+    fn register(&mut self, range: &Range<usize>) {
+        if let Some(uffd) = &self.uffd {
+            let _ = uffd.register(range.start as _, range.end - range.start);
+        }
+    }
+}
+
+fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) {
+    let mut tracees: HashMap<TraceePid, TraceeState> = Default::default();
+    let interval = Duration::from_millis(150);
 
     loop {
         let mut first = true;
@@ -145,86 +190,66 @@ fn relay(rx: mpsc::Receiver<TraceeEvent>, mut w_tx: broadcast::Sender<Vec<u8>>) 
                     _ => unreachable!(),
                 };
             } else {
-                flush_acc(&mut w_tx, &mut acc);
+                // didn't get an event in `interval`, block until we get one,
+                // but first, flush all batches
+                for tracee in tracees.values_mut() {
+                    tracee.flush();
+                }
                 break rx.recv().unwrap();
             }
         };
         debug!("{:?}", ev.blue());
 
-        // const COALESCE_THRESHOLD: usize = 64;
         const COALESCE_THRESHOLD: usize = 128;
 
-        match &ev {
-            TraceeEvent::PageIn { range } => match acc.as_mut() {
-                Some(Acc::PageIn { range_map, count }) if *count < COALESCE_THRESHOLD => {
-                    range_map.insert(range.clone(), IsResident::Yes);
-                    *count += 1;
-                }
-                _ => {
-                    flush_acc(&mut w_tx, &mut acc);
-                    acc = Some(Acc::PageIn {
-                        range_map: {
-                            let mut range_map = MemMap::default();
-                            range_map.insert(range.clone(), IsResident::Yes);
-                            range_map
-                        },
-                        count: 1,
-                    });
-                }
-            },
-            TraceeEvent::PageOut { range } => match acc.as_mut() {
-                Some(Acc::PageOut { range_map, count }) if *count < COALESCE_THRESHOLD => {
-                    range_map.insert(range.clone(), IsResident::No);
-                    *count += 1;
-                }
-                _ => {
-                    flush_acc(&mut w_tx, &mut acc);
-                    acc = Some(Acc::PageOut {
-                        range_map: {
-                            let mut range_map = MemMap::default();
-                            range_map.insert(range.clone(), IsResident::No);
-                            range_map
-                        },
-                        count: 1,
-                    });
-                }
-            },
-            _ => {
-                flush_acc(&mut w_tx, &mut acc);
-                send_ev(&mut w_tx, &ev);
+        let tracee = tracees.entry(ev.pid).or_insert_with(|| TraceeState {
+            pid: ev.pid,
+            map: Default::default(),
+            batch: Default::default(),
+            batch_size: 0,
+            uffd: None,
+            w_tx: w_tx.clone(),
+        });
+
+        match &ev.payload {
+            TraceePayload::PageIn { range } => tracee.accumulate(range.clone(), MemState::Resident),
+            TraceePayload::PageOut { range } => {
+                tracee.accumulate(range.clone(), MemState::NotResident)
+            }
+            other => {
+                tracee.flush();
+                tracee.send_ev(ev.payload);
             }
         };
 
-        match ev {
-            TraceeEvent::Map {
+        match ev.payload {
+            TraceePayload::Map {
                 range, resident, ..
             } => {
-                if let Some(uffd) = child_uffd.as_ref() {
-                    uffd.register(range.start as _, range.end - range.start)
-                        .unwrap();
-                }
-                map.insert(range, resident);
+                tracee.register(&range);
+                tracee.map.insert(range, resident);
             }
-            TraceeEvent::Connected { uffd } => {
-                child_uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
+            TraceePayload::Connected { uffd } => {
+                tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
             }
-            TraceeEvent::PageIn { range } => {
-                map.insert(range, IsResident::Yes);
+            TraceePayload::PageIn { range } => {
+                tracee.map.insert(range, MemState::Resident);
             }
-            TraceeEvent::PageOut { range } => {
-                map.insert(range, IsResident::No);
+            TraceePayload::PageOut { range } => {
+                tracee.map.insert(range, MemState::NotResident);
             }
-            TraceeEvent::Unmap { range } => {
-                map.remove(range);
+            TraceePayload::Unmap { range } => {
+                tracee.map.remove(range);
             }
-            TraceeEvent::Remap {
+            TraceePayload::Remap {
                 old_range,
                 new_range,
             } => {
                 warn!("Remap: {old_range:?} => {new_range:?}");
-                // FIXME: that's not right - we should retain the resident state
-                map.remove(old_range);
-                map.insert(new_range, IsResident::Yes);
+
+                // FIXME: that's not right - we should retain the memory state
+                tracee.map.remove(old_range);
+                tracee.map.insert(new_range, MemState::Resident);
             }
             _ => {
                 unreachable!()

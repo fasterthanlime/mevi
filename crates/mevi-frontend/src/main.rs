@@ -19,7 +19,13 @@ enum IsResident {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum TraceeEvent {
+struct TraceeEvent {
+    pid: u64,
+    payload: TraceePayload,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum TraceePayload {
     Map {
         range: Range<u64>,
         resident: IsResident,
@@ -74,23 +80,23 @@ fn app() -> Html {
                                 let msg: TraceeEvent = bincode::deserialize(&b).unwrap();
                                 gloo_console::log!(format!("{:?}", msg));
 
-                                match msg {
-                                    TraceeEvent::Map { range, resident } => {
+                                match msg.payload {
+                                    TraceePayload::Map { range, resident } => {
                                         map_acc.insert(range, resident);
                                     }
-                                    TraceeEvent::Connected { .. } => {
+                                    TraceePayload::Connected { .. } => {
                                         // ignore
                                     }
-                                    TraceeEvent::PageIn { range } => {
+                                    TraceePayload::PageIn { range } => {
                                         map_acc.insert(range, IsResident::Yes);
                                     }
-                                    TraceeEvent::PageOut { range } => {
+                                    TraceePayload::PageOut { range } => {
                                         map_acc.insert(range, IsResident::No);
                                     }
-                                    TraceeEvent::Unmap { range } => {
+                                    TraceePayload::Unmap { range } => {
                                         map_acc.insert(range, IsResident::Unmapped);
                                     }
-                                    TraceeEvent::Remap {
+                                    TraceePayload::Remap {
                                         old_range,
                                         new_range,
                                     } => {
@@ -98,12 +104,12 @@ fn app() -> Html {
                                         // FIXME: this is wrong but eh.
                                         map_acc.insert(new_range, IsResident::Yes);
                                     }
-                                    TraceeEvent::PageInAcc { range_map } => {
+                                    TraceePayload::PageInAcc { range_map } => {
                                         for (range, is_resident) in range_map.into_iter() {
                                             map_acc.insert(range, is_resident);
                                         }
                                     }
-                                    TraceeEvent::PageOutAcc { range_map } => {
+                                    TraceePayload::PageOutAcc { range_map } => {
                                         for (range, is_resident) in range_map.into_iter() {
                                             map_acc.insert(range, is_resident);
                                         }

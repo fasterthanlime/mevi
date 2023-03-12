@@ -11,14 +11,14 @@ use passfd::FdPassingExt;
 use tracing::warn;
 use userfaultfd::Uffd;
 
-use crate::TraceeEvent;
+use crate::TraceePayload;
 
-pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
+pub(crate) fn run(tx: mpsc::SyncSender<TraceePayload>, listener: UnixListener) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
     let (stream, _) = listener.accept().unwrap();
     let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-    tx.send(TraceeEvent::Connected {
+    tx.send(TraceePayload::Connected {
         uffd: uffd.as_raw_fd(),
     })
     .unwrap();
@@ -50,7 +50,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
                     }
                 }
                 let addr = addr as usize;
-                tx.send(TraceeEvent::PageIn {
+                tx.send(TraceePayload::PageIn {
                     range: addr..addr + page_size,
                 })
                 .unwrap();
@@ -58,7 +58,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
             userfaultfd::Event::Remap { from, to, len } => {
                 let from = from as usize;
                 let to = to as usize;
-                tx.send(TraceeEvent::Remap {
+                tx.send(TraceePayload::Remap {
                     old_range: from..from + len,
                     new_range: to..to + len,
                 })
@@ -67,12 +67,13 @@ pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>, listener: UnixListener) {
             userfaultfd::Event::Remove { start, end } => {
                 let start = start as usize;
                 let end = end as usize;
-                tx.send(TraceeEvent::PageOut { range: start..end }).unwrap();
+                tx.send(TraceePayload::PageOut { range: start..end })
+                    .unwrap();
             }
             userfaultfd::Event::Unmap { start, end } => {
                 let start = start as usize;
                 let end = end as usize;
-                tx.send(TraceeEvent::Unmap { range: start..end }).unwrap();
+                tx.send(TraceePayload::Unmap { range: start..end }).unwrap();
             }
             _ => {
                 warn!("Unexpected event: {:?}", event);

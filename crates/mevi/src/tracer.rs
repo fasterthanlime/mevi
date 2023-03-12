@@ -11,25 +11,25 @@ use nix::{
 use owo_colors::OwoColorize;
 use tracing::{info, trace, warn};
 
-use crate::{IsResident, TraceeEvent};
+use crate::{MemState, TraceePayload};
 
-pub(crate) fn run(tx: mpsc::SyncSender<TraceeEvent>) {
+pub(crate) fn run(tx: mpsc::SyncSender<TraceePayload>) {
     Tracee::new(tx).unwrap().run().unwrap();
 }
 
 struct Tracee {
-    tx: mpsc::SyncSender<TraceeEvent>,
+    tx: mpsc::SyncSender<TraceePayload>,
     pid: Pid,
     heap_range: Option<Range<usize>>,
 }
 
 struct Mapped {
     range: Range<usize>,
-    resident: IsResident,
+    resident: MemState,
 }
 
 impl Tracee {
-    fn new(tx: mpsc::SyncSender<TraceeEvent>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(tx: mpsc::SyncSender<TraceePayload>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -69,10 +69,10 @@ impl Tracee {
             if let Some(Mapped { range, resident }) = self.on_sys_exit()? {
                 let (tx, rx) = mpsc::channel();
                 self.tx
-                    .send(TraceeEvent::Map {
+                    .send(TraceePayload::Map {
                         range,
                         resident,
-                        _tx: Some(tx),
+                        _guard: Some(tx),
                     })
                     .unwrap();
 
@@ -117,7 +117,7 @@ impl Tracee {
                 if fd == -1 && addr_in == 0 {
                     return Ok(Some(Mapped {
                         range: ret..ret + len,
-                        resident: IsResident::No,
+                        resident: MemState::NotResident,
                     }));
                 }
             }
@@ -138,7 +138,7 @@ impl Tracee {
                         // userfaultfd
                         return Ok(Some(Mapped {
                             range: old_top..heap_range.end,
-                            resident: IsResident::Yes,
+                            resident: MemState::Resident,
                         }));
                     }
                 }
