@@ -190,6 +190,7 @@ impl Tracee {
                     // just a query: remember the top of the heap
                     if self.heap_range.is_none() {
                         self.heap_range = Some(ret..ret);
+                        info!("initial heap_range: {:#x?}", self.heap_range);
                     }
                 } else if let Some(heap_range) = self.heap_range.as_mut() {
                     // either growing or shrinking the heap,
