@@ -106,6 +106,10 @@ enum TraceePayload {
     Batch {
         batch: MemMap,
     },
+    Start {
+        cmdline: Vec<String>,
+    },
+    Exit,
 }
 
 #[tokio::main]
@@ -235,12 +239,21 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
         };
 
         let tracee = tracees.entry(tid).or_insert_with(|| {
-            let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
-                .unwrap()
+            let cmdline: Vec<String> = std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
+                .unwrap_or_default()
                 .split('\0')
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_owned())
                 .collect();
+
+            let ev = MeviEvent::TraceeEvent(
+                tid,
+                TraceePayload::Start {
+                    cmdline: cmdline.clone(),
+                },
+            );
+            _ = payload_tx.blocking_send(bincode::serialize(&ev).unwrap());
+
             TraceeState {
                 tid,
                 cmdline,
@@ -290,8 +303,14 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 tracee.map.remove(old_range);
                 tracee.map.insert(new_range, MemState::Resident);
             }
-            _ => {
+            TraceePayload::Batch { .. } => {
                 unreachable!()
+            }
+            TraceePayload::Start { .. } => {
+                unreachable!()
+            }
+            TraceePayload::Exit => {
+                tracees.remove(&tid);
             }
         }
     }

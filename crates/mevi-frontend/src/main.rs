@@ -55,7 +55,6 @@ enum TraceePayload {
     },
     Connected {
         _uffd: u64,
-        cmdline: Vec<String>,
     },
     PageIn {
         range: Range<u64>,
@@ -73,6 +72,10 @@ enum TraceePayload {
     Batch {
         batch: MemMap,
     },
+    Start {
+        cmdline: Vec<String>,
+    },
+    Exit,
 }
 
 #[derive(Clone)]
@@ -274,8 +277,8 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
         TraceePayload::Map { range, state, .. } => {
             tracee.map.insert(range, state);
         }
-        TraceePayload::Connected { cmdline, .. } => {
-            tracee.cmdline = cmdline;
+        TraceePayload::Connected { .. } => {
+            // do nothing
         }
         TraceePayload::PageIn { range } => {
             tracee.map.insert(range, MemState::Resident);
@@ -298,6 +301,12 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
             for (range, mem_state) in batch.into_iter() {
                 tracee.map.insert(range, mem_state);
             }
+        }
+        TraceePayload::Start { cmdline } => {
+            tracee.cmdline = cmdline;
+        }
+        TraceePayload::Exit { .. } => {
+            tracees.remove(&tid);
         }
     }
 }

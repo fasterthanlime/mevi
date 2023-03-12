@@ -101,6 +101,8 @@ impl Tracer {
                 }
                 WaitStatus::Exited(pid, status) => {
                     info!("{pid} exited with status {status}");
+                    let ev = MeviEvent::TraceeEvent(pid.into(), TraceePayload::Exit);
+                    self.tx.send(ev).unwrap();
                 }
                 WaitStatus::PtraceSyscall(pid) => {
                     debug!("{pid} in sys_enter / sys_exit");
