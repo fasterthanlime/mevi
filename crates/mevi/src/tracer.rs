@@ -42,7 +42,6 @@ impl Tracer {
         }
         cmd.env("LD_PRELOAD", "target/release/libmevi_preload.so");
         unsafe {
-            // FIXME: do that from LD_PRELOAD?
             cmd.pre_exec(|| {
                 ptrace::traceme()?;
                 Ok(())
