@@ -24,7 +24,7 @@
 
         * {
             font-family: 'Share Tech Mono', monospace;
-            font-size: 18px;
+            font-size: 16px;
         }
 
         .mem-stats, i {
@@ -44,13 +44,12 @@
         }
 
         .process {
-            padding: .3em .6em;
             border-radius: 4px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            /* border: 1px solid rgba(255, 255, 255, 0.3); */
             margin-right: 1em;
             margin-bottom: 1em;
 
-            padding: 1em;
+            /* padding: 1em; */
         }
 
         .process-info {
@@ -105,7 +104,7 @@
             position: absolute;
             height: 100%;
             border-radius: 1px;
-            border-left: 1px solid rgba(255, 255, 255, 0.3);
+            border-left: 1px solid transparent;
             font-style: normal;
             text-align: left;
             white-space: nowrap;
@@ -117,7 +116,7 @@
 
         i.Resident {
             background-color: var(--rss-color);
-            /* box-shadow: 0 0 20px rgba(255, 255, 255, 0.35); */
+            border-color: rgba(255, 255, 255, 0.5);
         }
 
         i.NotResident {

@@ -89,7 +89,6 @@ enum TraceePayload {
     },
     Connected {
         uffd: RawFd,
-        cmdline: Vec<String>,
     },
     PageIn {
         range: Range<usize>,
@@ -235,14 +234,22 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             MeviEvent::TraceeEvent(tid, ev) => (tid, ev),
         };
 
-        let tracee = tracees.entry(tid).or_insert_with(|| TraceeState {
-            tid,
-            cmdline: Default::default(),
-            map: Default::default(),
-            batch: Default::default(),
-            batch_size: 0,
-            uffd: None,
-            w_tx: payload_tx.clone(),
+        let tracee = tracees.entry(tid).or_insert_with(|| {
+            let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
+                .unwrap()
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_owned())
+                .collect();
+            TraceeState {
+                tid,
+                cmdline,
+                map: Default::default(),
+                batch: Default::default(),
+                batch_size: 0,
+                uffd: None,
+                w_tx: payload_tx.clone(),
+            }
         });
 
         match &payload {
@@ -261,9 +268,8 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 tracee.register(&range);
                 tracee.map.insert(range, state);
             }
-            TraceePayload::Connected { uffd, cmdline } => {
+            TraceePayload::Connected { uffd } => {
                 tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
-                tracee.cmdline = cmdline;
             }
             TraceePayload::PageIn { range } => {
                 tracee.map.insert(range, MemState::Resident);

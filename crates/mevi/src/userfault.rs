@@ -9,7 +9,7 @@ use std::{
 
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use userfaultfd::Uffd;
 
 use crate::{MeviEvent, TraceeId, TraceePayload};
@@ -25,19 +25,11 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
 
         let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
         debug!("From {tid:?}, got uffd {}", uffd.as_raw_fd());
-        let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
-            .unwrap()
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned())
-            .collect();
-        info!("cmdline for {tid:?} is {cmdline:?}");
 
         tx.send(MeviEvent::TraceeEvent(
             tid,
             TraceePayload::Connected {
                 uffd: uffd.as_raw_fd(),
-                cmdline,
             },
         ))
         .unwrap();

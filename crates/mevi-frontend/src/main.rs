@@ -157,6 +157,11 @@ fn app() -> Html {
                                 </div>
                                 {{
                                     let map = &tracee.map;
+                                    let has_any_memory_resident = map.iter().any(|(_, state)| *state == MemState::Resident);
+                                    if !has_any_memory_resident {
+                                        return html!{ };
+                                    }
+
                                     let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
                                     let mut group_infos = HashMap::new();
                                     for (key, group) in groups.into_iter() {
@@ -166,6 +171,7 @@ fn app() -> Html {
                                             if group_start.is_none() {
                                                 group_start = Some(range.start);
                                             }
+
                                             group_end = Some(range.end);
                                         }
                                         let size = group_end.unwrap() - group_start.unwrap();
@@ -175,18 +181,25 @@ fn app() -> Html {
                                         });
                                     }
 
-                                    let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
-                                    let mut max_mb: u64 = 4 * 1024 * 1024;
-                                    while max_mb < largest_group {
-                                        max_mb *= 2;
-                                    }
-                                    let max_mb = max_mb as f64;
+                                    // let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
+                                    // let mut max_mb: u64 = 4 * 1024 * 1024;
+                                    // while max_mb < largest_group {
+                                    //     max_mb *= 2;
+                                    // }
+                                    // let max_mb = max_mb as f64;
 
                                     let groups = map.iter().group_by(|(range, _)| (range.start >> 40));
                                     groups.into_iter().map(
                                         |(key, group)| {
                                             let mut group_markup = vec![];
                                             let mut group_start = None;
+                                            let group_info = &group_infos[&key];
+
+                                            let mut max_mb: u64 = 4 * 1024 * 1024;
+                                            while max_mb < group_info.size {
+                                                max_mb *= 2;
+                                            }
+                                            let max_mb = max_mb as f64;
 
                                             for (range, mem_state) in group {
                                                 if group_start.is_none() {
@@ -201,7 +214,7 @@ fn app() -> Html {
                                                 let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
                                                 group_markup.push(html! {
                                                     <i class={format!("{:?}", mem_state)} style={style}>{
-                                                        if matches!(mem_state, MemState::Resident) && size > 4 * 1024 * 1024 {
+                                                        if size > 4 * 1024 * 1024 {
                                                             Cow::from(formatter(size).to_string())
                                                         } else {
                                                             Cow::from("")
