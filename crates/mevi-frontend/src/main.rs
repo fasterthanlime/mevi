@@ -16,6 +16,7 @@ enum MemState {
     Resident,
     NotResident,
     Unmapped,
+    Untracked,
 }
 
 struct GroupInfo {
@@ -164,7 +165,8 @@ fn app() -> Html {
                                 </div>
                                 {{
                                     let map = &tracee.map;
-                                    let has_any_memory_resident = map.iter().any(|(_, state)| *state == MemState::Resident);
+                                    // let has_any_memory_resident = map.iter().any(|(_, state)| *state == MemState::Resident);
+                                    let has_any_memory_resident = true;
                                     if !has_any_memory_resident {
                                         return html!{ };
                                     }

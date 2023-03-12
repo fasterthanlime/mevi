@@ -34,6 +34,7 @@ enum MemState {
     Resident,
     NotResident,
     Unmapped,
+    Untracked,
 }
 
 type MemMap = RangeMap<usize, MemState>;
@@ -195,6 +196,20 @@ impl TraceeState {
     fn register(&mut self, range: &Range<usize>) {
         if let Some(uffd) = &self.uffd {
             let _ = uffd.register(range.start as _, range.end - range.start);
+        } else {
+            warn!(
+                "[{:?}] no uffd, can't register range {:#x?}",
+                self.tid, range
+            );
+
+            self.map.insert(range.clone(), MemState::Untracked);
+            self.send_ev(TraceePayload::Batch {
+                batch: {
+                    let mut batch: MemMap = Default::default();
+                    batch.insert(range.clone(), MemState::Untracked);
+                    batch
+                },
+            });
         }
     }
 }
