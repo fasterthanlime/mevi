@@ -176,7 +176,9 @@ impl TraceeState {
         self.send_ev(TraceePayload::Batch { batch });
     }
 
-    const BATCH_SIZE: usize = 128;
+    const BATCH_SIZE: usize = 512;
+    // const BATCH_SIZE: usize = 128;
+    // const BATCH_SIZE: usize = 16;
 
     fn accumulate(&mut self, range: Range<usize>, state: MemState) {
         if self.batch_size > Self::BATCH_SIZE {
@@ -196,7 +198,7 @@ impl TraceeState {
 
 fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec<u8>>) {
     let mut tracees: HashMap<TraceeId, TraceeState> = Default::default();
-    let interval = Duration::from_millis(150);
+    let interval = Duration::from_millis(16 * 3);
 
     loop {
         let mut first = true;
