@@ -20,7 +20,8 @@ pub(crate) fn run(
     listener: UnixListener,
 ) {
     loop {
-        let (mut stream, _) = listener.accept().unwrap();
+        let (mut stream, addr) = listener.accept().unwrap();
+        info!("accepted unix stream from {addr:?}!");
 
         // FIXME: this is unnecessary, SO_PEERCRED can be used here:
         // https://stackoverflow.com/questions/8104904/identify-program-that-connects-to-a-unix-domain-socket

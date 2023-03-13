@@ -8,7 +8,7 @@ use std::{
 };
 
 use color_eyre::Result;
-use libc::user_regs_struct;
+use libc::{sockaddr_un, user_regs_struct};
 use nix::{
     errno::Errno,
     sys::{
@@ -444,6 +444,30 @@ impl Tracee {
             panic!("socket failed with {}", Errno::from_i32(sock_fd));
         }
         info!("socket fd: {sock_fd}");
+
+        let mut addr_un = sockaddr_un {
+            sun_family: AF_UNIX as _,
+            sun_path: [0; 108],
+        };
+        let sock_path = b"/tmp/mevi.sock\0";
+        addr_un.sun_path[0..sock_path.len()]
+            .copy_from_slice(unsafe { std::mem::transmute(&sock_path[..]) });
+        let addr_len = 2 + sock_path.len();
+        info!("addr_len = {addr_len}");
+
+        write_to_staging(
+            unsafe { std::mem::transmute(&addr_un) },
+            std::mem::size_of_val(&addr_un),
+        )?;
+
+        let ret = invoke(
+            libc::SYS_connect,
+            &[sock_fd as _, staging_area as _, addr_len as _],
+        )? as i32;
+        if ret < 0 {
+            panic!("connect failed with {}", Errno::from_i32(ret));
+        }
+        info!("connect returned {ret}");
 
         self.uffd = Some(());
 
