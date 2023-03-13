@@ -20,7 +20,7 @@ use nix::{
 };
 use owo_colors::OwoColorize;
 use tracing::{debug, info, trace, warn};
-use userfaultfd::Uffd;
+use userfaultfd::{raw, FeatureFlags, IoctlFlags};
 
 use crate::{
     ConnectSource, MapGuard, MemState, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload,
@@ -278,15 +278,15 @@ impl Tracee {
                 return Ok(None);
             }
             libc::SYS_mmap => {
-                if self.uffd.is_none() {
-                    self.make_uffd(regs)?;
-                }
-
                 let fd = regs.r8 as i32;
                 let addr_in = regs.rdi;
                 let len = regs.rsi as usize;
 
                 if fd == -1 && addr_in == 0 {
+                    if self.uffd.is_none() {
+                        self.make_uffd(regs, ret)?;
+                    }
+
                     return Ok(Some(Mapped {
                         range: ret..ret + len,
                         resident: MemState::NotResident,
@@ -324,7 +324,9 @@ impl Tracee {
         Ok(None)
     }
 
-    fn make_uffd(&mut self, saved_regs: user_regs_struct) -> Result<()> {
+    /// `staging_area` is area that was _just_ mmap'd, and that we can write
+    /// to, so we can pass pointers-to-structs to the kernel
+    fn make_uffd(&mut self, saved_regs: user_regs_struct, staging_area: usize) -> Result<()> {
         let pid: Pid = self.tid.into();
 
         let sys_step = || {
@@ -377,19 +379,62 @@ impl Tracee {
         }
         info!("making userfaultfd sycall.. done! got fd {raw_uffd}");
 
+        let req_features =
+            FeatureFlags::EVENT_REMAP | FeatureFlags::EVENT_REMOVE | FeatureFlags::EVENT_UNMAP;
+        let mut api = raw::uffdio_api {
+            api: raw::UFFD_API,
+            features: req_features.bits(),
+            ioctls: 0,
+        };
+        const WORD_SIZE: usize = 8;
+        assert_eq!(
+            std::mem::size_of::<usize>(),
+            WORD_SIZE,
+            "this is all 64-bit only"
+        );
+        let num_words = std::mem::size_of_val(&api) / WORD_SIZE;
+        info!(
+            "api struct is {} bytes, {num_words} words",
+            std::mem::size_of_val(&api)
+        );
+
+        // write the api struct to the staging area
+        for i in 0..num_words {
+            #[allow(clippy::useless_transmute)]
+            let word = unsafe { (std::mem::transmute::<_, *const u64>(&api) as *const u64).add(i) };
+            let word = unsafe { *word };
+            info!("api word {i}: {:016x}", word);
+            unsafe { ptrace::write(pid, (staging_area + i * WORD_SIZE) as _, word as _)? };
+        }
+
         let ret = invoke(
             libc::SYS_ioctl,
-            &[
-                raw_uffd as _,
-                userfaultfd::raw::UFFDIO_API as _,
-                todo!("address of api struct"),
-            ],
+            &[raw_uffd as _, raw::UFFDIO_API as _, staging_area as _],
         )?;
-        panic!("ptrace:ioctl returned {ret}");
+        info!("ptrace:ioctl returned {ret}");
 
-        let mut call_regs = saved_regs;
-        call_regs.rip -= 2;
-        call_regs.rax = libc::SYS_ioctl as _;
+        // read the api struct back from the staging area
+        for i in 0..num_words {
+            #[allow(clippy::useless_transmute)]
+            let word_dst =
+                unsafe { (std::mem::transmute::<_, *mut u64>(&mut api) as *mut u64).add(i) };
+            let word = ptrace::read(pid, (staging_area + i * WORD_SIZE) as _)?;
+            info!("api word {i}: {:016x}", word);
+            unsafe { *word_dst = word as _ };
+        }
+
+        let supported = IoctlFlags::from_bits(api.ioctls).unwrap();
+        info!("supported ioctls: {supported:?}");
+
+        const AF_UNIX: u64 = 0x1;
+        const SOCK_STREAM: u64 = 0x1;
+        const SOCK_CLOEXEC: u64 = 0x80000;
+
+        let sock_fd = invoke(libc::SYS_socket, &[AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0])? as i32;
+        if sock_fd < 0 {
+            panic!("ptrace:socket failed with {}", Errno::from_i32(sock_fd));
+        }
+        info!("socket fd: {sock_fd}");
 
         self.uffd = Some(());
 
