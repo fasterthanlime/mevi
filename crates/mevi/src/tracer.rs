@@ -124,20 +124,26 @@ impl Tracer {
                 WaitStatus::PtraceSyscall(pid) => {
                     let tid: TraceeId = pid.into();
                     debug!("{tid} in sys_enter / sys_exit");
+
                     let tracee = self.tracees.entry(tid).or_insert_with(|| Tracee {
                         was_in_syscall: false,
                         tid,
-                        heap_range: None,
-                        uffd: None,
+                        kind: TraceeKind::Unknown,
                     });
+
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
+                        let for_tid = match &tracee.kind {
+                            TraceeKind::ThreadOf { pid } => *pid,
+                            _ => tracee.tid,
+                        };
+
                         if let Some(Mapped { range, resident }) =
-                            tracee.on_sys_exit(&mut self.tx)?
+                            tracee.on_sys_exit(&mut self.tx, for_tid)?
                         {
                             let (tx, rx) = mpsc::channel();
                             let ev = MeviEvent::TraceeEvent(
-                                tid,
+                                for_tid,
                                 TraceePayload::Map {
                                     range,
                                     state: resident,
@@ -153,9 +159,7 @@ impl Tracer {
                         if let Err(e) = ptrace::syscall(pid, None) {
                             if e == nix::errno::Errno::ESRCH {
                                 // the process has exited, we don't care
-                                info!(
-                                    "{pid} exited while we were spying on its syscalls, that's ok"
-                                );
+                                info!("{pid} exited while we spied");
                             }
                         }
                     } else {
@@ -204,36 +208,40 @@ impl Tracer {
 struct Tracee {
     was_in_syscall: bool,
     tid: TraceeId,
-    heap_range: Option<Range<usize>>,
-    uffd: Option<()>,
+    kind: TraceeKind,
+}
+
+enum TraceeKind {
+    Unknown,
+
+    // we got an uffd for it
+    Process { heap_range: Range<usize> },
+
+    // it's a thread of something we have an uffd for
+    ThreadOf { pid: TraceeId },
 }
 
 impl Tracee {
-    fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<Mapped>> {
+    fn on_sys_exit(
+        &mut self,
+        tx: &mut mpsc::SyncSender<MeviEvent>,
+        for_tid: TraceeId,
+    ) -> Result<Option<Mapped>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
 
-        if self.uffd.is_none() {
+        if matches!(self.kind, TraceeKind::Unknown) {
             match regs.orig_rax as _ {
-                libc::SYS_rseq => {
-                    // ignore, too early? cf. https://lwn.net/Articles/883104/
-                }
-                libc::SYS_set_robust_list => {
-                    // too early.
-                }
-                libc::SYS_rt_sigprocmask => {
-                    // too early.
+                libc::SYS_rseq | libc::SYS_set_robust_list | libc::SYS_rt_sigprocmask => {
+                    // these all happen super early, seems lke a bad idea? idk
                 }
                 libc::SYS_execve => {
-                    // bad idea
+                    // bad idea, we're about to replace all memory mappings anyway
                 }
                 syscall_nr => {
-                    info!(
-                        "{} making uffd on sys_exit for syscall {syscall_nr}",
-                        self.tid
-                    );
-                    self.make_uffd(regs, tx)?;
+                    info!("{} connecting syscall {syscall_nr} is returning", self.tid);
+                    self.connect(regs)?;
                 }
             }
         }
@@ -242,9 +250,9 @@ impl Tracee {
             libc::SYS_execve | libc::SYS_execveat => {
                 info!("{} will execve, resetting", self.tid);
 
-                self.heap_range = None;
-                self.uffd = None;
-                tx.send(MeviEvent::TraceeEvent(self.tid, TraceePayload::Execve))
+                // TODO: remember that we execv'd, at this point
+                self.kind = TraceeKind::Unknown;
+                tx.send(MeviEvent::TraceeEvent(for_tid, TraceePayload::Execve))
                     .unwrap();
 
                 return Ok(None);
@@ -267,25 +275,23 @@ impl Tracee {
                 }
             }
             libc::SYS_brk => {
-                if regs.rdi == 0 {
-                    // just a query: remember the top of the heap
-                    if self.heap_range.is_none() {
-                        self.heap_range = Some(ret..ret);
-                        info!("{} start of the heap: {:x?}", self.tid, ret);
-                    }
-                } else if let Some(heap_range) = self.heap_range.as_mut() {
-                    // either growing or shrinking the heap,
-                    // and we know the previous top
-                    let old_top = heap_range.end;
-                    heap_range.end = ret;
+                if let TraceeKind::Process { heap_range } = &mut self.kind {
+                    if regs.rdi == 0 {
+                        // just a query: ignore
+                    } else {
+                        // either growing or shrinking the heap,
+                        // and we know the previous top
+                        let old_top = heap_range.end;
+                        heap_range.end = ret;
 
-                    if heap_range.end > old_top {
-                        // heap just grew - shrinking will be handled by
-                        // userfaultfd
-                        return Ok(Some(Mapped {
-                            range: old_top..heap_range.end,
-                            resident: MemState::Resident,
-                        }));
+                        if heap_range.end > old_top {
+                            // heap just grew - shrinking will be handled by
+                            // userfaultfd
+                            return Ok(Some(Mapped {
+                                range: old_top..heap_range.end,
+                                resident: MemState::Resident,
+                            }));
+                        }
                     }
                 }
             }
@@ -300,11 +306,7 @@ impl Tracee {
     /// `staging_area` is area that was _just_ mmap'd, and that we can write
     /// to, so we can pass pointers-to-structs to the kernel
     #[allow(clippy::useless_transmute)]
-    fn make_uffd(
-        &mut self,
-        saved_regs: user_regs_struct,
-        tx: &mut mpsc::SyncSender<MeviEvent>,
-    ) -> Result<()> {
+    fn connect(&mut self, saved_regs: user_regs_struct) -> Result<()> {
         let tid = self.tid;
         let pid: Pid = self.tid.into();
 
@@ -358,8 +360,14 @@ impl Tracee {
             Ok(ptrace::getregs(pid)?.rax)
         };
 
-        let actual_pid = invoke(libc::SYS_getpid, &[])?;
-        info!("{} has PID {}", tid, actual_pid);
+        let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
+        info!("{} has PID {}", tid, real_pid);
+
+        if real_pid != tid {
+            info!("{tid} is a thread of {real_pid}");
+            self.kind = TraceeKind::ThreadOf { pid: real_pid };
+            return Ok(());
+        }
 
         debug!("allocate staging area");
         let staging_area = invoke(
@@ -566,7 +574,14 @@ impl Tracee {
         let ret = invoke(libc::SYS_munmap, &[staging_area as _, 0x1000])?;
         debug!("munmap(staging_area) returned {ret}");
 
-        self.uffd = Some(());
+        // TODO: get break start from `/proc/:pid/stat` field 47 instead?
+        // cf. https://man7.org/linux/man-pages/man5/proc.5.html
+        let ret = invoke(libc::SYS_brk, &[0])?;
+        debug!("brk(0) returned {ret}");
+
+        self.kind = TraceeKind::Process {
+            heap_range: ret as usize..ret as usize,
+        };
 
         ptrace::setregs(pid, saved_regs)?;
 
