@@ -570,7 +570,7 @@ impl Tracee {
         info!("{tid} now let's query proc maps");
         let maps = proc_maps::get_process_maps(tid.0 as _)?;
         for map in maps {
-            if map.filename().is_none() {
+            if map.filename().is_none() && map.is_read() && map.is_write() {
                 info!(
                     "- {:x?}..{:x?} R={}, W={} {map:?}",
                     map.start(),
