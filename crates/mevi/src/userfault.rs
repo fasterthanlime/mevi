@@ -97,8 +97,8 @@ fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let end = end as usize;
                 send_ev(TraceePayload::Unmap { range: start..end });
             }
-            _ => {
-                warn!("Unexpected event: {:?}", event);
+            userfaultfd::Event::Fork { uffd } => {
+                info!("[{tid:?}] Got a fork! The child's uffd is {:?}", uffd);
             }
         }
     }

@@ -11,7 +11,10 @@ fn ctor() {
     let uffd = UffdBuilder::new()
         .user_mode_only(false)
         .require_features(
-            FeatureFlags::EVENT_REMAP | FeatureFlags::EVENT_REMOVE | FeatureFlags::EVENT_UNMAP,
+            FeatureFlags::EVENT_REMAP
+                | FeatureFlags::EVENT_REMOVE
+                | FeatureFlags::EVENT_UNMAP
+                | FeatureFlags::EVENT_FORK,
         )
         .create()
         .unwrap();
