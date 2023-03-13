@@ -149,7 +149,7 @@ impl Tracer {
                                 );
                             }
 
-                            info!(
+                            debug!(
                                 "{} thread of {} Sending Map {range:x?} {resident:?}",
                                 tracee.tid, for_tid
                             );
@@ -283,7 +283,11 @@ impl Tracee {
                 let prot_flags = ProtFlags::from_bits(prot as _).unwrap();
                 let _ = (map_flags, prot_flags);
 
-                if fd == -1 && addr_in == 0 {
+                if fd == -1
+                    && addr_in == 0
+                    && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+                    && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
+                {
                     info!("{} thread of {for_tid} doing mmap addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd}", self.tid);
                     return Ok(Some(Mapped {
                         for_tid,
