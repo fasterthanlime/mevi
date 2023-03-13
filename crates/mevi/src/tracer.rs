@@ -366,6 +366,7 @@ impl Tracee {
         if real_pid != tid {
             info!("{tid} is a thread of {real_pid}");
             self.kind = TraceeKind::ThreadOf { pid: real_pid };
+            ptrace::setregs(pid, saved_regs)?;
             return Ok(());
         }
 
@@ -582,7 +583,6 @@ impl Tracee {
         self.kind = TraceeKind::Process {
             heap_range: ret as usize..ret as usize,
         };
-
         ptrace::setregs(pid, saved_regs)?;
 
         // info!("{tid} now let's query proc maps");
