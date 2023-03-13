@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt,
     ops::Range,
     os::{
         fd::{FromRawFd, RawFd},
@@ -44,6 +45,12 @@ const SOCK_PATH: &str = "/tmp/mevi.sock";
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 struct TraceeId(u64);
+
+impl fmt::Display for TraceeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}]", self.0)
+    }
+}
 
 impl From<Pid> for TraceeId {
     fn from(pid: Pid) -> Self {
@@ -199,10 +206,7 @@ impl TraceeState {
 
         if let Some(uffd) = &self.uffd {
             if let Err(e) = uffd.register(range.start as _, range.end - range.start) {
-                warn!(
-                    "[{:?}] failed to register range {:#x?}: {}",
-                    self.tid, range, e
-                );
+                warn!("{} failed to register range {range:x?}: {e}", self.tid);
             } else {
                 could_register = true;
             }
@@ -213,10 +217,7 @@ impl TraceeState {
         } else {
             if !self.printed_uffd_warning {
                 self.printed_uffd_warning = true;
-                warn!(
-                    "[{:?}] no uffd, can't register range {:#x?}",
-                    self.tid, range
-                );
+                warn!("{} no uffd, can't register range {range:x?}", self.tid);
             }
 
             self.map.insert(range.clone(), MemState::Untracked);

@@ -97,7 +97,8 @@ impl Tracer {
             trace!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
-                    debug!("{pid} caught sig {sig}");
+                    let tid: TraceeId = pid.into();
+                    debug!("{tid} caught sig {sig}");
                     match sig {
                         Signal::SIGTRAP => {
                             // probably ptrace stuff?
@@ -105,7 +106,7 @@ impl Tracer {
                         }
                         Signal::SIGSTOP => {
                             // probably a new thread after clone?
-                            info!("new thread? {pid}");
+                            info!("{tid} is that a new thread?");
                             ptrace::syscall(pid, None)?;
                         }
                         _ => {
@@ -125,8 +126,8 @@ impl Tracer {
                     self.tx.send(ev).unwrap();
                 }
                 WaitStatus::PtraceSyscall(pid) => {
-                    debug!("{pid} in sys_enter / sys_exit");
                     let tid: TraceeId = pid.into();
+                    debug!("{tid} in sys_enter / sys_exit");
                     let tracee = self.tracees.entry(tid).or_insert_with(|| Tracee {
                         was_in_syscall: false,
                         tid,
@@ -164,17 +165,19 @@ impl Tracer {
                     }
                 }
                 WaitStatus::PtraceEvent(pid, sig, event) => {
+                    let tid: TraceeId = pid.into();
                     let event_name: Cow<'static, str> = match event {
                         libc::PTRACE_EVENT_CLONE => "clone".into(),
                         libc::PTRACE_EVENT_FORK => "fork".into(),
                         libc::PTRACE_EVENT_VFORK => "vfork".into(),
                         other => format!("unknown event {}", other).into(),
                     };
-                    info!("{pid} got event {event_name} with sig {sig}");
+                    info!("{tid} got event {event_name} with sig {sig}");
                     ptrace::syscall(pid, None)?;
                 }
                 WaitStatus::Signaled(pid, signal, core_dump) => {
-                    info!("{pid} was terminated with signal {signal} with, WCOREDUMP({core_dump})");
+                    let tid: TraceeId = pid.into();
+                    info!("{tid} was terminated with signal {signal} with, WCOREDUMP({core_dump})");
                 }
                 other => {
                     panic!("unexpected wait status: {:?}", other);
@@ -214,10 +217,7 @@ impl Tracee {
                     // just a query: remember the top of the heap
                     if self.heap_range.is_none() {
                         self.heap_range = Some(ret..ret);
-                        info!(
-                            "[{:?}] initial heap_range: {:x?}",
-                            self.tid, self.heap_range
-                        );
+                        info!("{} initial heap_range: {:x?}", self.tid, self.heap_range);
                     }
                 } else if let Some(heap_range) = self.heap_range.as_mut() {
                     // either growing or shrinking the heap,
