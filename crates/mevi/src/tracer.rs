@@ -264,7 +264,9 @@ impl Tracee {
 
         match regs.orig_rax as i64 {
             libc::SYS_execve | libc::SYS_execveat => {
-                info!("{} is about to execve", self.tid);
+                info!("{} is about to execve, getting rid of heap_range", self.tid);
+
+                self.heap_range = None;
                 tx.send(MeviEvent::TraceeEvent(self.tid, TraceePayload::Execve))
                     .unwrap();
 

@@ -299,7 +299,8 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
             // do nothing
         }
         TraceePayload::Execve => {
-            // do nothing
+            // all the mappings are invalidated on exec
+            tracee.map.clear();
         }
         TraceePayload::PageIn { range } => {
             tracee.map.insert(range, MemState::Resident);

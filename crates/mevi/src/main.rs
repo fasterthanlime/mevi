@@ -353,6 +353,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             TraceePayload::Execve => {
                 info!("{} execve, getting rid of uffd", tracee.tid);
                 tracee.uffd = None;
+                tracee.map.clear();
             }
             TraceePayload::PageIn { range } => {
                 tracee.map.insert(range, MemState::Resident);
