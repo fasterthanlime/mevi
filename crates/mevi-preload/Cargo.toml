@@ -11,4 +11,4 @@ crate-type = ["cdylib"]
 [dependencies]
 ctor = "0.1.26"
 passfd = "0.1.6"
-userfaultfd = "0.5.0"
+userfaultfd.workspace = true

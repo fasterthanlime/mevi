@@ -863,15 +863,6 @@ checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
 name = "memoffset"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
-name = "memoffset"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5de893c32cde5f383baa4c04c5d6dbdd735cfd4a794b0debdb2bb1b421da5ff4"
@@ -888,7 +879,7 @@ dependencies = [
  "color-eyre",
  "humansize",
  "libc",
- "nix 0.26.2",
+ "nix",
  "owo-colors",
  "passfd",
  "postage",
@@ -961,19 +952,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f3790c00a0150112de0f4cd161e3d7fc4b2d8a5542ffc35f099a2562aecb35c"
-dependencies = [
- "bitflags",
- "cc",
- "cfg-if",
- "libc",
- "memoffset 0.6.5",
-]
-
-[[package]]
-name = "nix"
 version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfdda3d196821d6af13126e40375cdf7da646a96114af134d5f417a9a1dc8e1a"
@@ -981,7 +959,7 @@ dependencies = [
  "bitflags",
  "cfg-if",
  "libc",
- "memoffset 0.7.1",
+ "memoffset",
  "pin-utils",
  "static_assertions",
 ]
@@ -1760,13 +1738,12 @@ dependencies = [
 [[package]]
 name = "userfaultfd"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fee2cdd3f8bdd0b98d7aa9ace35e7214a71888229d60c1cd1cd71b7c09c089d0"
+source = "git+https://github.com/fasterthanlime/userfaultfd-rs?branch=expose-raw#e9160a896f7d8d80c8b0943480885598bd698d06"
 dependencies = [
  "bitflags",
  "cfg-if",
  "libc",
- "nix 0.23.2",
+ "nix",
  "thiserror",
  "userfaultfd-sys",
 ]
@@ -1774,8 +1751,7 @@ dependencies = [
 [[package]]
 name = "userfaultfd-sys"
 version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2cbcf2717fa856a7226499babbbccb07353ea2fc2b27defd38bd13b1227cc78"
+source = "git+https://github.com/fasterthanlime/userfaultfd-rs?branch=expose-raw#e9160a896f7d8d80c8b0943480885598bd698d06"
 dependencies = [
  "bindgen",
  "cc",

@@ -3,5 +3,8 @@ members = [
 	"crates/*"
 ]
 
+[workspace.dependencies]
+userfaultfd = { git = "https://github.com/fasterthanlime/userfaultfd-rs", branch = "expose-raw" }
+
 [profile.release]
 debug = 1
