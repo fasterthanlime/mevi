@@ -214,7 +214,10 @@ impl TraceeState {
 
         if let Some(uffd) = &self.uffd {
             if let Err(e) = uffd.register(range.start as _, range.end - range.start) {
-                warn!("{} failed to register range {range:x?}: {e}", self.tid);
+                warn!(
+                    "{} failed to register range {range:x?} {state:?}: {e}",
+                    self.tid
+                );
             } else {
                 could_register = true;
             }
@@ -225,7 +228,10 @@ impl TraceeState {
         } else {
             if !self.printed_uffd_warning {
                 self.printed_uffd_warning = true;
-                warn!("{} no uffd, can't register range {range:x?}", self.tid);
+                warn!(
+                    "{} no uffd, can't register range {range:x?} {state:?}",
+                    self.tid
+                );
             }
 
             self.map.insert(range.clone(), MemState::Untracked);

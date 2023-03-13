@@ -31,6 +31,7 @@ struct Tracer {
 }
 
 struct Mapped {
+    for_tid: TraceeId,
     range: Range<usize>,
     resident: MemState,
 }
@@ -133,15 +134,25 @@ impl Tracer {
 
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
-                        let for_tid = match &tracee.kind {
-                            TraceeKind::ThreadOf { pid } => *pid,
-                            _ => tracee.tid,
-                        };
 
-                        if let Some(Mapped { range, resident }) =
-                            tracee.on_sys_exit(&mut self.tx, for_tid)?
+                        if let Some(Mapped {
+                            range,
+                            resident,
+                            for_tid,
+                        }) = tracee.on_sys_exit(&mut self.tx)?
                         {
                             let (tx, rx) = mpsc::channel();
+                            if matches!(tracee.kind, TraceeKind::Unknown) {
+                                warn!(
+                                    "{} unknown tracee kind, and Mapped, assuming process",
+                                    tracee.tid
+                                );
+                            }
+
+                            info!(
+                                "{} thread of {} Sending Map {range:x?} {resident:?}",
+                                tracee.tid, for_tid
+                            );
                             let ev = MeviEvent::TraceeEvent(
                                 for_tid,
                                 TraceePayload::Map {
@@ -222,11 +233,7 @@ enum TraceeKind {
 }
 
 impl Tracee {
-    fn on_sys_exit(
-        &mut self,
-        tx: &mut mpsc::SyncSender<MeviEvent>,
-        for_tid: TraceeId,
-    ) -> Result<Option<Mapped>> {
+    fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<Mapped>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
@@ -240,11 +247,20 @@ impl Tracee {
                     // bad idea, we're about to replace all memory mappings anyway
                 }
                 syscall_nr => {
-                    info!("{} connecting syscall {syscall_nr} is returning", self.tid);
+                    info!(
+                        "{} connecting as syscall {syscall_nr} is returning",
+                        self.tid
+                    );
                     self.connect(regs)?;
                 }
             }
         }
+
+        let for_tid = match &self.kind {
+            TraceeKind::ThreadOf { pid } => *pid,
+            TraceeKind::Unknown => self.tid,
+            TraceeKind::Process { .. } => self.tid,
+        };
 
         match regs.orig_rax as i64 {
             libc::SYS_execve | libc::SYS_execveat => {
@@ -268,13 +284,17 @@ impl Tracee {
                 let _ = (map_flags, prot_flags);
 
                 if fd == -1 && addr_in == 0 {
+                    info!("{} thread of {for_tid} doing mmap addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd}", self.tid);
                     return Ok(Some(Mapped {
+                        for_tid,
                         range: ret..ret + len,
                         resident: MemState::NotResident,
                     }));
                 }
             }
             libc::SYS_brk => {
+                // FIXME: calling brk from a thread should mutate the heap of
+                // the whole process
                 if let TraceeKind::Process { heap_range } = &mut self.kind {
                     if regs.rdi == 0 {
                         // just a query: ignore
@@ -288,11 +308,14 @@ impl Tracee {
                             // heap just grew - shrinking will be handled by
                             // userfaultfd
                             return Ok(Some(Mapped {
+                                for_tid,
                                 range: old_top..heap_range.end,
                                 resident: MemState::Resident,
                             }));
                         }
                     }
+                } else {
+                    warn!("a thread is changing the brk for the process, we should handle that");
                 }
             }
             _ => {
@@ -361,7 +384,6 @@ impl Tracee {
         };
 
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
-        info!("{} has PID {}", tid, real_pid);
 
         if real_pid != tid {
             info!("{tid} is a thread of {real_pid}");
