@@ -552,6 +552,13 @@ impl Tracee {
         let ret = invoke(libc::SYS_close, &[sock_fd as _])?;
         info!("close returned {ret}");
 
+        // now let's clear the staging area again
+        for i in 0..(0x1000 / 8) {
+            unsafe {
+                ptrace::write(pid, (staging_area + i * 8) as _, 0x0 as _)?;
+            };
+        }
+
         self.uffd = Some(());
 
         ptrace::setregs(pid, saved_regs)?;
