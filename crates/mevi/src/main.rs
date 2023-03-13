@@ -161,6 +161,7 @@ struct TraceeState {
     batch_size: usize,
     uffd: Option<Uffd>,
     w_tx: broadcast::Sender<Vec<u8>>,
+    printed_uffd_warning: bool,
 }
 
 impl TraceeState {
@@ -193,14 +194,30 @@ impl TraceeState {
         self.batch_size += 1;
     }
 
-    fn register(&mut self, range: &Range<usize>) {
+    fn register(&mut self, range: &Range<usize>, state: MemState) {
+        let mut could_register = false;
+
         if let Some(uffd) = &self.uffd {
-            let _ = uffd.register(range.start as _, range.end - range.start);
+            if let Err(e) = uffd.register(range.start as _, range.end - range.start) {
+                warn!(
+                    "[{:?}] failed to register range {:#x?}: {}",
+                    self.tid, range, e
+                );
+            } else {
+                could_register = true;
+            }
+        }
+
+        if could_register {
+            self.map.insert(range.clone(), state);
         } else {
-            warn!(
-                "[{:?}] no uffd, can't register range {:#x?}",
-                self.tid, range
-            );
+            if !self.printed_uffd_warning {
+                self.printed_uffd_warning = true;
+                warn!(
+                    "[{:?}] no uffd, can't register range {:#x?}",
+                    self.tid, range
+                );
+            }
 
             self.map.insert(range.clone(), MemState::Untracked);
             self.send_ev(TraceePayload::Batch {
@@ -282,6 +299,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 batch_size: 0,
                 uffd: None,
                 w_tx: payload_tx.clone(),
+                printed_uffd_warning: false,
             }
         });
 
@@ -298,8 +316,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
 
         match payload {
             TraceePayload::Map { range, state, .. } => {
-                tracee.register(&range);
-                tracee.map.insert(range, state);
+                tracee.register(&range, state);
             }
             TraceePayload::Connected { uffd } => {
                 tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
