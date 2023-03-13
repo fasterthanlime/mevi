@@ -33,7 +33,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
             tid,
             TraceePayload::Connected {
                 source: ConnectSource::Uds,
-                uffd: uffd.as_raw_fd(),
+                uffd: uffd.as_raw_fd() as _,
             },
         ))
         .unwrap();
@@ -54,6 +54,7 @@ fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
 
     loop {
         let event = uffd.read_event().unwrap().unwrap();
+        tracing::debug!("{tid} got {event:?}");
         match event {
             userfaultfd::Event::Pagefault { addr, .. } => {
                 unsafe {

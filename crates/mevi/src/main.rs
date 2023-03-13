@@ -103,7 +103,7 @@ enum TraceePayload {
     },
     Connected {
         source: ConnectSource,
-        uffd: RawFd,
+        uffd: u64,
     },
     Execve,
     PageIn {
@@ -333,7 +333,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                         tracee.tid, prev_uffd, uffd
                     );
                 } else {
-                    tracee.uffd = Some(unsafe { Uffd::from_raw_fd(uffd) });
+                    tracee.uffd = Some(unsafe { Uffd::from_raw_fd(uffd as RawFd) });
                     info!(
                         "{} connected to uffd {:?} from {source:?}",
                         tracee.tid, uffd

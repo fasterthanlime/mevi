@@ -214,9 +214,10 @@ impl Tracee {
 
         match regs.orig_rax as i64 {
             libc::SYS_execve | libc::SYS_execveat => {
-                info!("{} is about to execve, getting rid of heap_range", self.tid);
+                info!("{} will execve, resetting", self.tid);
 
                 self.heap_range = None;
+                self.uffd = None;
                 tx.send(MeviEvent::TraceeEvent(self.tid, TraceePayload::Execve))
                     .unwrap();
 
@@ -355,13 +356,13 @@ impl Tracee {
             Ok(())
         };
 
-        info!("making userfaultfd sycall");
+        debug!("making userfaultfd sycall");
         let ret = invoke(libc::SYS_userfaultfd, &[])? as i32;
         if ret < 0 {
             panic!("userfaultfd failed with {}", Errno::from_i32(-ret));
         }
         let raw_uffd = ret;
-        info!("making userfaultfd sycall.. done! got fd {raw_uffd}");
+        debug!("making userfaultfd sycall.. done! got fd {raw_uffd}");
 
         let req_features =
             FeatureFlags::EVENT_REMAP | FeatureFlags::EVENT_REMOVE | FeatureFlags::EVENT_UNMAP;
@@ -384,7 +385,7 @@ impl Tracee {
         if ret < 0 {
             panic!("ioctl failed with {ret} / {}", Errno::from_i32(-ret));
         }
-        info!("ioctl returned {ret}");
+        debug!("ioctl returned {ret}");
 
         // read the api struct back from the staging area
         read_from_staging(
@@ -393,7 +394,7 @@ impl Tracee {
         )?;
 
         let supported = IoctlFlags::from_bits(api.ioctls).unwrap();
-        info!("supported ioctls: {supported:?}");
+        debug!("supported ioctls: {supported:?}");
 
         let ret = invoke(
             libc::SYS_socket,
@@ -407,7 +408,7 @@ impl Tracee {
             panic!("socket failed with {ret} / {}", Errno::from_i32(-ret));
         }
         let sock_fd = ret;
-        info!("socket fd: {sock_fd}");
+        debug!("socket fd: {sock_fd}");
 
         let mut addr_un = sockaddr_un {
             sun_family: libc::AF_UNIX as _,
@@ -417,7 +418,7 @@ impl Tracee {
         addr_un.sun_path[0..sock_path.len()]
             .copy_from_slice(unsafe { std::mem::transmute(&sock_path[..]) });
         let addr_len = 2 + sock_path.len();
-        info!("addr_len = {addr_len}");
+        debug!("addr_len = {addr_len}");
 
         write_to_staging(
             unsafe { std::mem::transmute(&addr_un) },
@@ -431,7 +432,7 @@ impl Tracee {
         if ret < 0 {
             panic!("connect failed with {ret} / {}", Errno::from_i32(-ret));
         }
-        info!("connect returned {ret}");
+        debug!("connect returned {ret}");
 
         // now let's write the pid
         unsafe {
@@ -441,7 +442,7 @@ impl Tracee {
         if ret < 0 {
             panic!("write failed with {ret} / {}", Errno::from_i32(-ret));
         }
-        info!("write returned {ret}");
+        debug!("write returned {ret}");
 
         // this is the big one: sendmsg.
         let mut msghdr = libc::msghdr {
@@ -508,15 +509,15 @@ impl Tracee {
         if ret < 0 {
             panic!("sendmsg failed with {}", Errno::from_i32(-ret));
         }
-        info!("sendmsg returned {ret}");
+        debug!("sendmsg returned {ret}");
 
         // now close the socket
         let ret = invoke(libc::SYS_close, &[sock_fd as _])?;
-        info!("close(sock_fd) returned {ret}");
+        debug!("close(sock_fd) returned {ret}");
 
         // now close the uffd
         let ret = invoke(libc::SYS_close, &[raw_uffd as _])?;
-        info!("close(uffd) returned {ret}");
+        debug!("close(uffd) returned {ret}");
 
         // now let's clear the staging area again
         for i in 0..(0x1000 / 8) {
