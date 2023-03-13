@@ -12,13 +12,9 @@ use passfd::FdPassingExt;
 use tracing::{info, warn};
 use userfaultfd::Uffd;
 
-use crate::{ConnectSource, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload};
+use crate::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
 
-pub(crate) fn run(
-    puh: PendingUffdsHandle,
-    tx: mpsc::SyncSender<MeviEvent>,
-    listener: UnixListener,
-) {
+pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
     loop {
         let (mut stream, addr) = listener.accept().unwrap();
         info!("accepted unix stream from {addr:?}!");
@@ -36,7 +32,7 @@ pub(crate) fn run(
         tx.send(MeviEvent::TraceeEvent(
             tid,
             TraceePayload::Connected {
-                source: ConnectSource::LdPreload,
+                source: ConnectSource::Uds,
                 uffd: uffd.as_raw_fd(),
             },
         ))
@@ -44,13 +40,12 @@ pub(crate) fn run(
 
         std::thread::spawn({
             let tx = tx.clone();
-            let puh = puh.clone();
-            move || handle(puh, tx, tid, uffd)
+            move || handle(tx, tid, uffd)
         });
     }
 }
 
-fn handle(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
+fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
     let send_ev = |payload: TraceePayload| {
@@ -110,13 +105,8 @@ fn handle(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>, tid: TraceeI
                 let end = end as usize;
                 send_ev(TraceePayload::Unmap { range: start..end });
             }
-            userfaultfd::Event::Fork { uffd } => {
-                info!("{tid} uffd fork notif! the child uffd is {:?}", uffd);
-
-                {
-                    let mut puh = puh.lock().unwrap();
-                    puh.entry(tid).or_default().push_back(uffd);
-                }
+            other => {
+                warn!("unhandled uffd event: {:?}", other);
             }
         }
     }

@@ -49,8 +49,7 @@ struct MapGuard {
 
 #[derive(Debug, Clone, Deserialize)]
 enum ConnectSource {
-    LdPreload,
-    Fork,
+    Uds,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,9 +1,5 @@
 use std::{
-    borrow::Cow,
-    collections::HashMap,
-    ops::Range,
-    os::{fd::AsRawFd, unix::process::CommandExt},
-    process::Command,
+    borrow::Cow, collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command,
     sync::mpsc,
 };
 
@@ -12,6 +8,7 @@ use libc::{sockaddr_un, user_regs_struct};
 use nix::{
     errno::Errno,
     sys::{
+        mman::{MapFlags, ProtFlags},
         ptrace,
         signal::Signal,
         wait::{waitpid, WaitStatus},
@@ -22,19 +19,15 @@ use owo_colors::OwoColorize;
 use tracing::{debug, info, trace, warn};
 use userfaultfd::{raw, FeatureFlags, IoctlFlags};
 
-use crate::{
-    ConnectSource, MapGuard, MemState, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload,
-};
+use crate::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
 
-pub(crate) fn run(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>) {
-    Tracer::new(puh, tx).unwrap().run().unwrap();
+pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>) {
+    Tracer::new(tx).unwrap().run().unwrap();
 }
 
 struct Tracer {
-    puh: PendingUffdsHandle,
     tx: mpsc::SyncSender<MeviEvent>,
     tracees: HashMap<TraceeId, Tracee>,
-    next_parent: Option<TraceeId>,
 }
 
 struct Mapped {
@@ -43,7 +36,7 @@ struct Mapped {
 }
 
 impl Tracer {
-    fn new(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
+    fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -53,14 +46,6 @@ impl Tracer {
             cmd.arg(arg);
         }
 
-        // let exe_path = std::fs::canonicalize(std::env::current_exe()?)?;
-        // debug!("exe_path = {}", exe_path.display());
-        // let exe_dir_path = exe_path.parent().unwrap();
-        // debug!("exe_dir_path = {}", exe_dir_path.display());
-        // let preload_path = exe_dir_path.join("libmevi_preload.so");
-        // debug!("Setting LD_PRELOAD to {}", preload_path.display());
-
-        // cmd.env("LD_PRELOAD", preload_path);
         unsafe {
             cmd.pre_exec(|| {
                 ptrace::traceme()?;
@@ -86,10 +71,8 @@ impl Tracer {
         ptrace::syscall(pid, None)?;
 
         Ok(Self {
-            puh,
             tx,
             tracees: Default::default(),
-            next_parent: None,
         })
     }
 
@@ -120,40 +103,6 @@ impl Tracer {
                         Signal::SIGSTOP => {
                             // probably a new thread after clone?
                             info!("{tid} is that a new thread? (just got SIGSTOP)");
-
-                            if let Some(ptid) = self.next_parent.take() {
-                                info!("{tid} might be a child of {ptid}, methinks");
-
-                                if let Some(uffd) = self
-                                    .puh
-                                    .lock()
-                                    .unwrap()
-                                    .get_mut(&ptid)
-                                    .and_then(|q| q.pop_front())
-                                {
-                                    info!(
-                                        "{tid}<={ptid} well we got uffd {} for this",
-                                        uffd.as_raw_fd()
-                                    );
-                                    self.tx
-                                        .send(MeviEvent::TraceeEvent(
-                                            tid,
-                                            TraceePayload::Connected {
-                                                source: ConnectSource::Fork,
-                                                uffd: uffd.as_raw_fd(),
-                                            },
-                                        ))
-                                        .unwrap();
-                                    info!(
-                                        "{tid}<={ptid} well we got uffd {} for this... and sent!",
-                                        uffd.as_raw_fd()
-                                    );
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                } else {
-                                    info!("{tid}<={ptid} well we don't have a uffd for this");
-                                }
-                            }
-
                             ptrace::syscall(pid, None)?;
                         }
                         _ => {
@@ -228,10 +177,6 @@ impl Tracer {
                 }
                 WaitStatus::PtraceEvent(pid, sig, event) => {
                     let tid: TraceeId = pid.into();
-                    if event == libc::PTRACE_EVENT_FORK {
-                        self.next_parent = Some(tid);
-                    }
-
                     let event_name: Cow<'static, str> = match event {
                         libc::PTRACE_EVENT_CLONE => "clone".into(),
                         libc::PTRACE_EVENT_FORK => "fork".into(),
@@ -281,12 +226,21 @@ impl Tracee {
                 let fd = regs.r8 as i32;
                 let addr_in = regs.rdi;
                 let len = regs.rsi as usize;
+                let prot = regs.rdx;
+                let flags = regs.r10;
 
                 if fd == -1 && addr_in == 0 {
                     if self.uffd.is_none() {
-                        info!("will make uffd using mmap'd region of len {len}");
-                        assert!(len > 0x1000);
-                        self.make_uffd(regs, ret)?;
+                        let map_flags = MapFlags::from_bits(flags as _).unwrap();
+                        let prot_flags = ProtFlags::from_bits(prot as _).unwrap();
+                        if prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+                            && len >= 0x1000
+                        {
+                            info!("will make uffd using mmap'd region of len {len} with flags {map_flags:?} and prot {prot_flags:?}");
+                            self.make_uffd(regs, ret)?;
+                        } else {
+                            info!("will NOT make uffd using mmap'd region of len {len} with flags {map_flags:?} and prot {prot_flags:?}");
+                        }
                     }
 
                     return Ok(Some(Mapped {

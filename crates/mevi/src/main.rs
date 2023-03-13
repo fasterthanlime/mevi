@@ -1,12 +1,12 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     fmt,
     ops::Range,
     os::{
         fd::{FromRawFd, RawFd},
         unix::net::UnixListener,
     },
-    sync::{mpsc, Arc, Mutex},
+    sync::mpsc,
     time::Duration,
 };
 
@@ -41,12 +41,6 @@ enum MemState {
 type MemMap = RangeMap<usize, MemState>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
-
-/// Pending userfault FDs for child processes that have been _just_
-/// forked, but for which we haven't gotten a SIGSTOP yet.
-type PendingUffds = HashMap<TraceeId, VecDeque<Uffd>>;
-
-type PendingUffdsHandle = Arc<Mutex<PendingUffds>>;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
@@ -97,8 +91,7 @@ struct TraceeSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 enum ConnectSource {
-    LdPreload,
-    Fork,
+    Uds,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,11 +146,8 @@ async fn main() -> Result<()> {
     let tx2 = tx.clone();
     let tx3 = tx.clone();
 
-    let puh: PendingUffdsHandle = Default::default();
-    let puh2 = puh.clone();
-
-    std::thread::spawn(move || userfault::run(puh, tx, listener));
-    std::thread::spawn(move || tracer::run(puh2, tx2));
+    std::thread::spawn(move || userfault::run(tx, listener));
+    std::thread::spawn(move || tracer::run(tx2));
 
     let (payload_tx, _) = broadcast::channel(16);
 
