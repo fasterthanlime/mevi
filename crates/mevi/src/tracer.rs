@@ -326,8 +326,16 @@ impl Tracee {
 
     /// `staging_area` is area that was _just_ mmap'd, and that we can write
     /// to, so we can pass pointers-to-structs to the kernel
+    #[allow(clippy::useless_transmute)]
     fn make_uffd(&mut self, saved_regs: user_regs_struct, staging_area: usize) -> Result<()> {
         let pid: Pid = self.tid.into();
+
+        const WORD_SIZE: usize = 8;
+        assert_eq!(
+            std::mem::size_of::<usize>(),
+            WORD_SIZE,
+            "this is all 64-bit only"
+        );
 
         let sys_step = || {
             ptrace::syscall(pid, None)?;
@@ -369,6 +377,28 @@ impl Tracee {
             Ok(ptrace::getregs(pid)?.rax)
         };
 
+        let write_to_staging = |addr: *const u64, addr_size: usize| -> Result<()> {
+            let num_words = addr_size / WORD_SIZE;
+            for i in 0..num_words {
+                let word = unsafe { addr.add(i) };
+                let word = unsafe { *word };
+                info!("api word {i}: {:016x}", word);
+                unsafe { ptrace::write(pid, (staging_area + i * WORD_SIZE) as _, word as _)? };
+            }
+            Ok(())
+        };
+
+        let read_from_staging = |addr: *mut u64, addr_size: usize| -> Result<()> {
+            let num_words = addr_size / WORD_SIZE;
+            for i in 0..num_words {
+                let word_dst = unsafe { addr.add(i) };
+                let word = ptrace::read(pid, (staging_area + i * WORD_SIZE) as _)?;
+                info!("api word {i}: {:016x}", word);
+                unsafe { *word_dst = word as _ };
+            }
+            Ok(())
+        };
+
         info!("making userfaultfd sycall");
         let raw_uffd = invoke(libc::SYS_userfaultfd, &[])? as i32;
         if raw_uffd < 0 {
@@ -386,12 +416,6 @@ impl Tracee {
             features: req_features.bits(),
             ioctls: 0,
         };
-        const WORD_SIZE: usize = 8;
-        assert_eq!(
-            std::mem::size_of::<usize>(),
-            WORD_SIZE,
-            "this is all 64-bit only"
-        );
         let num_words = std::mem::size_of_val(&api) / WORD_SIZE;
         info!(
             "api struct is {} bytes, {num_words} words",
@@ -399,13 +423,10 @@ impl Tracee {
         );
 
         // write the api struct to the staging area
-        for i in 0..num_words {
-            #[allow(clippy::useless_transmute)]
-            let word = unsafe { (std::mem::transmute::<_, *const u64>(&api) as *const u64).add(i) };
-            let word = unsafe { *word };
-            info!("api word {i}: {:016x}", word);
-            unsafe { ptrace::write(pid, (staging_area + i * WORD_SIZE) as _, word as _)? };
-        }
+        write_to_staging(
+            unsafe { std::mem::transmute(&api) },
+            std::mem::size_of_val(&api),
+        )?;
 
         let ret = invoke(
             libc::SYS_ioctl,
@@ -414,14 +435,10 @@ impl Tracee {
         info!("ptrace:ioctl returned {ret}");
 
         // read the api struct back from the staging area
-        for i in 0..num_words {
-            #[allow(clippy::useless_transmute)]
-            let word_dst =
-                unsafe { (std::mem::transmute::<_, *mut u64>(&mut api) as *mut u64).add(i) };
-            let word = ptrace::read(pid, (staging_area + i * WORD_SIZE) as _)?;
-            info!("api word {i}: {:016x}", word);
-            unsafe { *word_dst = word as _ };
-        }
+        read_from_staging(
+            unsafe { std::mem::transmute(&mut api) },
+            std::mem::size_of_val(&api),
+        )?;
 
         let supported = IoctlFlags::from_bits(api.ioctls).unwrap();
         info!("supported ioctls: {supported:?}");
