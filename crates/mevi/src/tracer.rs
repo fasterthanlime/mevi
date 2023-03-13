@@ -233,7 +233,7 @@ impl Tracee {
                         "{} making uffd on sys_exit for syscall {syscall_nr}",
                         self.tid
                     );
-                    self.make_uffd(regs)?;
+                    self.make_uffd(regs, tx)?;
                 }
             }
         }
@@ -300,7 +300,12 @@ impl Tracee {
     /// `staging_area` is area that was _just_ mmap'd, and that we can write
     /// to, so we can pass pointers-to-structs to the kernel
     #[allow(clippy::useless_transmute)]
-    fn make_uffd(&mut self, saved_regs: user_regs_struct) -> Result<()> {
+    fn make_uffd(
+        &mut self,
+        saved_regs: user_regs_struct,
+        tx: &mut mpsc::SyncSender<MeviEvent>,
+    ) -> Result<()> {
+        let tid = self.tid;
         let pid: Pid = self.tid.into();
 
         const WORD_SIZE: usize = 8;
@@ -561,6 +566,31 @@ impl Tracee {
         self.uffd = Some(());
 
         ptrace::setregs(pid, saved_regs)?;
+
+        info!("{tid} now let's query proc maps");
+        let maps = proc_maps::get_process_maps(tid.0 as _)?;
+        for map in maps {
+            if map.filename().is_none() {
+                info!(
+                    "- {:x?}..{:x?} R={}, W={} {map:?}",
+                    map.start(),
+                    map.start() + map.size(),
+                    map.is_read(),
+                    map.is_write()
+                );
+                tx.send(MeviEvent::TraceeEvent(
+                    tid,
+                    TraceePayload::Map {
+                        range: map.start()..map.start() + map.size(),
+                        state: MemState::NotResident,
+                        _guard: MapGuard { _inner: None },
+                    },
+                ))
+                .unwrap();
+                info!("Let's hope that's not a race condition");
+            }
+        }
+
         Ok(())
     }
 }
