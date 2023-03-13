@@ -8,6 +8,7 @@ use std::{
 };
 
 use color_eyre::Result;
+use libc::user_regs_struct;
 use nix::{
     sys::{
         ptrace,
@@ -18,6 +19,7 @@ use nix::{
 };
 use owo_colors::OwoColorize;
 use tracing::{debug, info, trace, warn};
+use userfaultfd::Uffd;
 
 use crate::{
     ConnectSource, MapGuard, MemState, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload,
@@ -50,14 +52,14 @@ impl Tracer {
             cmd.arg(arg);
         }
 
-        let exe_path = std::fs::canonicalize(std::env::current_exe()?)?;
-        debug!("exe_path = {}", exe_path.display());
-        let exe_dir_path = exe_path.parent().unwrap();
-        debug!("exe_dir_path = {}", exe_dir_path.display());
-        let preload_path = exe_dir_path.join("libmevi_preload.so");
-        debug!("Setting LD_PRELOAD to {}", preload_path.display());
+        // let exe_path = std::fs::canonicalize(std::env::current_exe()?)?;
+        // debug!("exe_path = {}", exe_path.display());
+        // let exe_dir_path = exe_path.parent().unwrap();
+        // debug!("exe_dir_path = {}", exe_dir_path.display());
+        // let preload_path = exe_dir_path.join("libmevi_preload.so");
+        // debug!("Setting LD_PRELOAD to {}", preload_path.display());
 
-        cmd.env("LD_PRELOAD", preload_path);
+        // cmd.env("LD_PRELOAD", preload_path);
         unsafe {
             cmd.pre_exec(|| {
                 ptrace::traceme()?;
@@ -176,6 +178,7 @@ impl Tracer {
                         was_in_syscall: false,
                         tid,
                         heap_range: None,
+                        uffd: None,
                     });
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
@@ -254,6 +257,7 @@ struct Tracee {
     was_in_syscall: bool,
     tid: TraceeId,
     heap_range: Option<Range<usize>>,
+    uffd: Option<Uffd>,
 }
 
 impl Tracee {
@@ -273,6 +277,10 @@ impl Tracee {
                 return Ok(None);
             }
             libc::SYS_mmap => {
+                if self.uffd.is_none() {
+                    self.make_uffd(regs)?;
+                }
+
                 let fd = regs.r8 as i32;
                 let addr_in = regs.rdi;
                 let len = regs.rsi as usize;
@@ -313,5 +321,43 @@ impl Tracee {
         }
 
         Ok(None)
+    }
+
+    fn make_uffd(&self, saved_regs: user_regs_struct) -> Result<()> {
+        let pid: Pid = self.tid.into();
+
+        let syscall_step = || {
+            ptrace::syscall(pid, None)?;
+            let waitres = waitpid(pid, None)?;
+            match waitres {
+                WaitStatus::PtraceSyscall(_) => {
+                    // good.
+                }
+                other => {
+                    panic!("unexpected wait status: {:?}", other);
+                }
+            }
+
+            Ok::<_, color_eyre::Report>(())
+        };
+
+        info!("making userfaultfd sycall");
+        let mut call_regs = saved_regs;
+        // size of `syscall` is 2 bytes, rewind!
+        call_regs.rip -= 2;
+        call_regs.rax = libc::SYS_userfaultfd as _;
+        ptrace::setregs(pid, call_regs)?;
+
+        syscall_step()?;
+        syscall_step()?;
+
+        let ret_regs = ptrace::getregs(pid)?;
+        println!(
+            "ret = {}, ret_regs after userfaultfd: {ret_regs:?}",
+            ret_regs.rax
+        );
+
+        ptrace::setregs(pid, saved_regs)?;
+        Ok(())
     }
 }

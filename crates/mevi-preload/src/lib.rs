@@ -8,13 +8,12 @@ use userfaultfd::{FeatureFlags, UffdBuilder};
 
 #[ctor::ctor]
 fn ctor() {
+    println!("Register number: {}", userfaultfd::raw::UFFDIO_REGISTER);
+
     let uffd = UffdBuilder::new()
         .user_mode_only(false)
         .require_features(
-            FeatureFlags::EVENT_REMAP
-                | FeatureFlags::EVENT_REMOVE
-                | FeatureFlags::EVENT_UNMAP
-                | FeatureFlags::EVENT_FORK,
+            FeatureFlags::EVENT_REMAP | FeatureFlags::EVENT_REMOVE | FeatureFlags::EVENT_UNMAP,
         )
         .create()
         .unwrap();

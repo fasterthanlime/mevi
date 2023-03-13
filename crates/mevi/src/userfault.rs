@@ -10,7 +10,7 @@ use std::{
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
 use tracing::{info, warn};
-use userfaultfd::{raw, FeatureFlags, IoctlFlags, Uffd};
+use userfaultfd::Uffd;
 
 use crate::{ConnectSource, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload};
 
@@ -22,6 +22,8 @@ pub(crate) fn run(
     loop {
         let (mut stream, _) = listener.accept().unwrap();
 
+        // FIXME: this is unnecessary, SO_PEERCRED can be used here:
+        // https://stackoverflow.com/questions/8104904/identify-program-that-connects-to-a-unix-domain-socket
         let mut pid_bytes = [0u8; 8];
         stream.read_exact(&mut pid_bytes).unwrap();
 
@@ -109,26 +111,6 @@ fn handle(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>, tid: TraceeI
             }
             userfaultfd::Event::Fork { uffd } => {
                 info!("{tid} uffd fork notif! the child uffd is {:?}", uffd);
-
-                // FIXME: turns out the API handshake is already done by
-                // the time the fd is dup'd? I'm very confused.
-                //
-                // info!("{tid} performing API handshake with child uffd");
-                // let req_features = FeatureFlags::EVENT_REMAP
-                //     | FeatureFlags::EVENT_REMOVE
-                //     | FeatureFlags::EVENT_UNMAP
-                //     | FeatureFlags::EVENT_FORK;
-                // let mut api = raw::uffdio_api {
-                //     api: raw::UFFD_API,
-                //     features: req_features.bits(),
-                //     ioctls: 0,
-                // };
-                // unsafe {
-                //     raw::api(uffd.as_raw_fd(), &mut api as *mut raw::uffdio_api).unwrap();
-                // }
-                // let supported = IoctlFlags::from_bits(api.ioctls)
-                //     .expect("unknown ioctl flags returned by kernel");
-                // info!("{tid} supported ioctls: {supported:?}");
 
                 {
                     let mut puh = puh.lock().unwrap();
