@@ -9,7 +9,7 @@ use std::{
 
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use userfaultfd::Uffd;
 
 use crate::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
@@ -17,10 +17,12 @@ use crate::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
 pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
     loop {
         let (mut stream, addr) = listener.accept().unwrap();
-        info!("accepted unix stream from {addr:?}!");
+        debug!("accepted unix stream from {addr:?}!");
 
-        // FIXME: this is unnecessary, SO_PEERCRED can be used here:
+        // TODO: SO_PEERCRED can be used here instead of sending the PID in-band
         // https://stackoverflow.com/questions/8104904/identify-program-that-connects-to-a-unix-domain-socket
+        //
+        // but it's also a huge PITA, and this isn't security-sensitive, so.
         let mut pid_bytes = [0u8; 8];
         stream.read_exact(&mut pid_bytes).unwrap();
 

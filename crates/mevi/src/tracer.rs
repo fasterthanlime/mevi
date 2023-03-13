@@ -102,7 +102,7 @@ impl Tracer {
                         }
                         Signal::SIGSTOP => {
                             // probably a new thread after clone?
-                            info!("{tid} is that a new thread? (just got SIGSTOP)");
+                            debug!("{tid} is that a new thread? (just got SIGSTOP)");
                             ptrace::syscall(pid, None)?;
                         }
                         _ => {
@@ -212,6 +212,10 @@ impl Tracee {
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
 
+        if self.uffd.is_none() {
+            self.make_uffd(regs)?;
+        }
+
         match regs.orig_rax as i64 {
             libc::SYS_execve | libc::SYS_execveat => {
                 debug!("{} will execve, resetting", self.tid);
@@ -229,21 +233,11 @@ impl Tracee {
                 let len = regs.rsi as usize;
                 let prot = regs.rdx;
                 let flags = regs.r10;
+                let map_flags = MapFlags::from_bits(flags as _).unwrap();
+                let prot_flags = ProtFlags::from_bits(prot as _).unwrap();
+                let _ = (map_flags, prot_flags);
 
                 if fd == -1 && addr_in == 0 {
-                    if self.uffd.is_none() {
-                        let map_flags = MapFlags::from_bits(flags as _).unwrap();
-                        let prot_flags = ProtFlags::from_bits(prot as _).unwrap();
-                        if prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
-                            && len >= 0x1000
-                        {
-                            info!("will make uffd using mmap'd region of len {len} with flags {map_flags:?} and prot {prot_flags:?}");
-                            self.make_uffd(regs, ret)?;
-                        } else {
-                            info!("will NOT make uffd using mmap'd region of len {len} with flags {map_flags:?} and prot {prot_flags:?}");
-                        }
-                    }
-
                     return Ok(Some(Mapped {
                         range: ret..ret + len,
                         resident: MemState::NotResident,
@@ -255,7 +249,7 @@ impl Tracee {
                     // just a query: remember the top of the heap
                     if self.heap_range.is_none() {
                         self.heap_range = Some(ret..ret);
-                        info!("{} initial heap_range: {:x?}", self.tid, self.heap_range);
+                        info!("{} start of the heap: {:x?}", self.tid, ret);
                     }
                 } else if let Some(heap_range) = self.heap_range.as_mut() {
                     // either growing or shrinking the heap,
@@ -284,7 +278,7 @@ impl Tracee {
     /// `staging_area` is area that was _just_ mmap'd, and that we can write
     /// to, so we can pass pointers-to-structs to the kernel
     #[allow(clippy::useless_transmute)]
-    fn make_uffd(&mut self, saved_regs: user_regs_struct, staging_area: usize) -> Result<()> {
+    fn make_uffd(&mut self, saved_regs: user_regs_struct) -> Result<()> {
         let pid: Pid = self.tid.into();
 
         const WORD_SIZE: usize = 8;
@@ -333,6 +327,22 @@ impl Tracee {
 
             Ok(ptrace::getregs(pid)?.rax)
         };
+
+        debug!("allocate staging area");
+        let staging_area = invoke(
+            libc::SYS_mmap,
+            &[
+                0,
+                0x1000,
+                (libc::PROT_READ | libc::PROT_WRITE) as _,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as _,
+                (-1_i32) as u64,
+                0,
+            ],
+        )? as usize;
+        if staging_area == libc::MAP_FAILED as usize {
+            panic!("failed to allocate staging area: returned MAP_FAILED");
+        }
 
         let write_to_staging = |addr: *const u64, addr_size: usize| -> Result<()> {
             let num_words = addr_size / WORD_SIZE;
@@ -519,12 +529,9 @@ impl Tracee {
         let ret = invoke(libc::SYS_close, &[raw_uffd as _])?;
         debug!("close(uffd) returned {ret}");
 
-        // now let's clear the staging area again
-        for i in 0..(0x1000 / 8) {
-            unsafe {
-                ptrace::write(pid, (staging_area + i * 8) as _, 0x0 as _)?;
-            };
-        }
+        // now free the staging area
+        let ret = invoke(libc::SYS_munmap, &[staging_area as _, 0x1000])?;
+        debug!("munmap(staging_area) returned {ret}");
 
         self.uffd = Some(());
 
