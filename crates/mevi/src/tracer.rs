@@ -330,6 +330,10 @@ impl Tracee {
     fn make_uffd(&mut self, saved_regs: user_regs_struct, staging_area: usize) -> Result<()> {
         let pid: Pid = self.tid.into();
 
+        const AF_UNIX: u64 = 0x1;
+        const SOCK_STREAM: u64 = 0x1;
+        const SOCK_CLOEXEC: u64 = 0x80000;
+
         const WORD_SIZE: usize = 8;
         assert_eq!(
             std::mem::size_of::<usize>(),
@@ -402,10 +406,7 @@ impl Tracee {
         info!("making userfaultfd sycall");
         let raw_uffd = invoke(libc::SYS_userfaultfd, &[])? as i32;
         if raw_uffd < 0 {
-            panic!(
-                "ptrace:userfaultfd failed with {}",
-                Errno::from_i32(raw_uffd)
-            );
+            panic!("userfaultfd failed with {}", Errno::from_i32(raw_uffd));
         }
         info!("making userfaultfd sycall.. done! got fd {raw_uffd}");
 
@@ -416,11 +417,6 @@ impl Tracee {
             features: req_features.bits(),
             ioctls: 0,
         };
-        let num_words = std::mem::size_of_val(&api) / WORD_SIZE;
-        info!(
-            "api struct is {} bytes, {num_words} words",
-            std::mem::size_of_val(&api)
-        );
 
         // write the api struct to the staging area
         write_to_staging(
@@ -432,7 +428,7 @@ impl Tracee {
             libc::SYS_ioctl,
             &[raw_uffd as _, raw::UFFDIO_API as _, staging_area as _],
         )?;
-        info!("ptrace:ioctl returned {ret}");
+        info!("ioctl returned {ret}");
 
         // read the api struct back from the staging area
         read_from_staging(
@@ -443,13 +439,9 @@ impl Tracee {
         let supported = IoctlFlags::from_bits(api.ioctls).unwrap();
         info!("supported ioctls: {supported:?}");
 
-        const AF_UNIX: u64 = 0x1;
-        const SOCK_STREAM: u64 = 0x1;
-        const SOCK_CLOEXEC: u64 = 0x80000;
-
         let sock_fd = invoke(libc::SYS_socket, &[AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0])? as i32;
         if sock_fd < 0 {
-            panic!("ptrace:socket failed with {}", Errno::from_i32(sock_fd));
+            panic!("socket failed with {}", Errno::from_i32(sock_fd));
         }
         info!("socket fd: {sock_fd}");
 
