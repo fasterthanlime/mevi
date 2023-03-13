@@ -9,12 +9,16 @@ use std::{
 
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use tracing::info;
+use tracing::{info, warn};
 use userfaultfd::Uffd;
 
-use crate::{MeviEvent, TraceeId, TraceePayload};
+use crate::{ConnectSource, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload};
 
-pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
+pub(crate) fn run(
+    puh: PendingUffdsHandle,
+    tx: mpsc::SyncSender<MeviEvent>,
+    listener: UnixListener,
+) {
     loop {
         let (mut stream, _) = listener.accept().unwrap();
 
@@ -29,6 +33,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
         tx.send(MeviEvent::TraceeEvent(
             tid,
             TraceePayload::Connected {
+                source: ConnectSource::LdPreload,
                 uffd: uffd.as_raw_fd(),
             },
         ))
@@ -36,12 +41,13 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
 
         std::thread::spawn({
             let tx = tx.clone();
-            move || handle(tx, tid, uffd)
+            let puh = puh.clone();
+            move || handle(puh, tx, tid, uffd)
         });
     }
 }
 
-fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
+fn handle(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
     let send_ev = |payload: TraceePayload| {
@@ -64,6 +70,10 @@ fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                                     libc::EAGAIN => {
                                         // this is actually fine, just try it again
                                         continue;
+                                    }
+                                    libc::EBADF => {
+                                        warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                                        return;
                                     }
                                     _ => {
                                         panic!("{e}");
@@ -99,6 +109,10 @@ fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             }
             userfaultfd::Event::Fork { uffd } => {
                 info!("{tid} Got a fork! The child's uffd is {:?}", uffd);
+                {
+                    let mut puh = puh.lock().unwrap();
+                    puh.entry(tid).or_default().push_back(uffd);
+                }
             }
         }
     }

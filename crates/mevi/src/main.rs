@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt,
     ops::Range,
     os::{
         fd::{FromRawFd, RawFd},
         unix::net::UnixListener,
     },
-    sync::mpsc,
+    sync::{mpsc, Arc, Mutex},
     time::Duration,
 };
 
@@ -23,7 +23,7 @@ use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
 
@@ -41,6 +41,12 @@ enum MemState {
 type MemMap = RangeMap<usize, MemState>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
+
+/// Pending userfault FDs for child processes that have been _just_
+/// forked, but for which we haven't gotten a SIGSTOP yet.
+type PendingUffds = HashMap<TraceeId, VecDeque<Uffd>>;
+
+type PendingUffdsHandle = Arc<Mutex<PendingUffds>>;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
@@ -90,6 +96,12 @@ struct TraceeSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+enum ConnectSource {
+    LdPreload,
+    Fork,
+}
+
+#[derive(Debug, Clone, Serialize)]
 enum TraceePayload {
     Map {
         range: Range<usize>,
@@ -97,8 +109,10 @@ enum TraceePayload {
         _guard: MapGuard,
     },
     Connected {
+        source: ConnectSource,
         uffd: RawFd,
     },
+    Execve,
     PageIn {
         range: Range<usize>,
     },
@@ -139,8 +153,11 @@ async fn main() -> Result<()> {
     let tx2 = tx.clone();
     let tx3 = tx.clone();
 
-    std::thread::spawn(move || userfault::run(tx, listener));
-    std::thread::spawn(move || tracer::run(tx2));
+    let puh: PendingUffdsHandle = Default::default();
+    let puh2 = puh.clone();
+
+    std::thread::spawn(move || userfault::run(puh, tx, listener));
+    std::thread::spawn(move || tracer::run(puh2, tx2));
 
     let (payload_tx, _) = broadcast::channel(16);
 
@@ -319,8 +336,23 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             TraceePayload::Map { range, state, .. } => {
                 tracee.register(&range, state);
             }
-            TraceePayload::Connected { uffd } => {
-                tracee.uffd.replace(unsafe { Uffd::from_raw_fd(uffd) });
+            TraceePayload::Connected { source, uffd } => {
+                if let Some(prev_uffd) = tracee.uffd.as_ref() {
+                    warn!(
+                        "{} already has uffd {:?}, not using {:?} from {source:?}",
+                        tracee.tid, prev_uffd, uffd
+                    );
+                } else {
+                    tracee.uffd = Some(unsafe { Uffd::from_raw_fd(uffd) });
+                    info!(
+                        "{} connected to uffd {:?} from {source:?}",
+                        tracee.tid, uffd
+                    );
+                }
+            }
+            TraceePayload::Execve => {
+                info!("{} execve, getting rid of uffd", tracee.tid);
+                tracee.uffd = None;
             }
             TraceePayload::PageIn { range } => {
                 tracee.map.insert(range, MemState::Resident);

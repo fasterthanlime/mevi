@@ -47,6 +47,12 @@ struct MapGuard {
     _inner: Option<()>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+enum ConnectSource {
+    LdPreload,
+    Fork,
+}
+
 #[derive(Debug, Deserialize)]
 enum TraceePayload {
     Map {
@@ -55,8 +61,10 @@ enum TraceePayload {
         _guard: MapGuard,
     },
     Connected {
+        _source: ConnectSource,
         _uffd: u64,
     },
+    Execve,
     PageIn {
         range: Range<u64>,
     },
@@ -288,6 +296,9 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
             tracee.map.insert(range, state);
         }
         TraceePayload::Connected { .. } => {
+            // do nothing
+        }
+        TraceePayload::Execve => {
             // do nothing
         }
         TraceePayload::PageIn { range } => {

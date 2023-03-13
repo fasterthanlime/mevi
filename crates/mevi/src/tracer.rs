@@ -1,5 +1,9 @@
 use std::{
-    borrow::Cow, collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command,
+    borrow::Cow,
+    collections::HashMap,
+    ops::Range,
+    os::{fd::AsRawFd, unix::process::CommandExt},
+    process::Command,
     sync::mpsc,
 };
 
@@ -15,15 +19,19 @@ use nix::{
 use owo_colors::OwoColorize;
 use tracing::{debug, info, trace, warn};
 
-use crate::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
+use crate::{
+    ConnectSource, MapGuard, MemState, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload,
+};
 
-pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>) {
-    Tracer::new(tx).unwrap().run().unwrap();
+pub(crate) fn run(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>) {
+    Tracer::new(puh, tx).unwrap().run().unwrap();
 }
 
 struct Tracer {
+    puh: PendingUffdsHandle,
     tx: mpsc::SyncSender<MeviEvent>,
     tracees: HashMap<TraceeId, Tracee>,
+    next_parent: Option<TraceeId>,
 }
 
 struct Mapped {
@@ -32,7 +40,7 @@ struct Mapped {
 }
 
 impl Tracer {
-    fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
+    fn new(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -75,8 +83,10 @@ impl Tracer {
         ptrace::syscall(pid, None)?;
 
         Ok(Self {
+            puh,
             tx,
             tracees: Default::default(),
+            next_parent: None,
         })
     }
 
@@ -106,7 +116,41 @@ impl Tracer {
                         }
                         Signal::SIGSTOP => {
                             // probably a new thread after clone?
-                            info!("{tid} is that a new thread?");
+                            info!("{tid} is that a new thread? (just got SIGSTOP)");
+
+                            if let Some(ptid) = self.next_parent.take() {
+                                info!("{tid} might be a child of {ptid}, methinks");
+
+                                if let Some(uffd) = self
+                                    .puh
+                                    .lock()
+                                    .unwrap()
+                                    .get_mut(&ptid)
+                                    .and_then(|q| q.pop_front())
+                                {
+                                    info!(
+                                        "{tid}<={ptid} well we got uffd {} for this",
+                                        uffd.as_raw_fd()
+                                    );
+                                    self.tx
+                                        .send(MeviEvent::TraceeEvent(
+                                            tid,
+                                            TraceePayload::Connected {
+                                                source: ConnectSource::Fork,
+                                                uffd: uffd.as_raw_fd(),
+                                            },
+                                        ))
+                                        .unwrap();
+                                    info!(
+                                        "{tid}<={ptid} well we got uffd {} for this... and sent!",
+                                        uffd.as_raw_fd()
+                                    );
+                                    std::thread::sleep(std::time::Duration::from_millis(10));
+                                } else {
+                                    info!("{tid}<={ptid} well we don't have a uffd for this");
+                                }
+                            }
+
                             ptrace::syscall(pid, None)?;
                         }
                         _ => {
@@ -135,7 +179,9 @@ impl Tracer {
                     });
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
-                        if let Some(Mapped { range, resident }) = tracee.on_sys_exit()? {
+                        if let Some(Mapped { range, resident }) =
+                            tracee.on_sys_exit(&mut self.tx)?
+                        {
                             let (tx, rx) = mpsc::channel();
                             let ev = MeviEvent::TraceeEvent(
                                 tid,
@@ -161,17 +207,34 @@ impl Tracer {
                         }
                     } else {
                         tracee.was_in_syscall = true;
-                        ptrace::syscall(pid, None)?;
+                        match ptrace::syscall(pid, None) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                if e == nix::errno::Errno::ESRCH {
+                                    // the process has exited, we don't care
+                                    info!(
+                                        "{tid} exited while we were spying on its syscalls, that's ok"
+                                    );
+                                } else {
+                                    panic!("{tid} ptrace::syscall failed: {e}");
+                                }
+                            }
+                        }
                     }
                 }
                 WaitStatus::PtraceEvent(pid, sig, event) => {
                     let tid: TraceeId = pid.into();
+                    if event == libc::PTRACE_EVENT_FORK {
+                        self.next_parent = Some(tid);
+                    }
+
                     let event_name: Cow<'static, str> = match event {
                         libc::PTRACE_EVENT_CLONE => "clone".into(),
                         libc::PTRACE_EVENT_FORK => "fork".into(),
                         libc::PTRACE_EVENT_VFORK => "vfork".into(),
                         other => format!("unknown event {}", other).into(),
                     };
+
                     info!("{tid} got event {event_name} with sig {sig}");
                     ptrace::syscall(pid, None)?;
                 }
@@ -194,12 +257,19 @@ struct Tracee {
 }
 
 impl Tracee {
-    fn on_sys_exit(&mut self) -> Result<Option<Mapped>> {
+    fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<Mapped>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
 
         match regs.orig_rax as i64 {
+            libc::SYS_execve | libc::SYS_execveat => {
+                info!("{} is about to execve", self.tid);
+                tx.send(MeviEvent::TraceeEvent(self.tid, TraceePayload::Execve))
+                    .unwrap();
+
+                return Ok(None);
+            }
             libc::SYS_mmap => {
                 let fd = regs.r8 as i32;
                 let addr_in = regs.rdi;
