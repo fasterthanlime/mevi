@@ -214,7 +214,7 @@ impl Tracee {
 
         match regs.orig_rax as i64 {
             libc::SYS_execve | libc::SYS_execveat => {
-                info!("{} will execve, resetting", self.tid);
+                debug!("{} will execve, resetting", self.tid);
 
                 self.heap_range = None;
                 self.uffd = None;

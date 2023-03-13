@@ -151,7 +151,7 @@ fn app() -> Html {
     let formatter = make_format(BINARY);
     html! {
         <>
-            <div>
+            <div class="mem-stats-container">
                 <span class="mem-stats virt"><span class="name">{"Virtual"}</span>{format!("{}", formatter(total_virt))}</span>
                 <span class="mem-stats rss"><span class="name">{"Resident"}</span>{format!("{}", formatter(total_res))}</span>
             </div>

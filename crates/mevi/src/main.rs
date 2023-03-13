@@ -195,7 +195,8 @@ impl TraceeState {
         self.send_ev(TraceePayload::Batch { batch });
     }
 
-    const BATCH_SIZE: usize = 512;
+    const BATCH_SIZE: usize = 1024;
+    // const BATCH_SIZE: usize = 512;
     // const BATCH_SIZE: usize = 128;
     // const BATCH_SIZE: usize = 16;
 
@@ -241,7 +242,8 @@ impl TraceeState {
 
 fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec<u8>>) {
     let mut tracees: HashMap<TraceeId, TraceeState> = Default::default();
-    let interval = Duration::from_millis(16 * 3);
+    // let interval = Duration::from_millis(16 * 3);
+    let interval = Duration::from_millis(16 * 6);
 
     loop {
         let mut first = true;
@@ -341,7 +343,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 }
             }
             TraceePayload::Execve => {
-                info!("{} execve, getting rid of uffd", tracee.tid);
+                debug!("{} will execve, clearing uffd", tracee.tid);
                 tracee.uffd = None;
                 tracee.map.clear();
             }

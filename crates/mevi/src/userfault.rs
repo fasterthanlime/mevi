@@ -39,13 +39,16 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
         .unwrap();
 
         std::thread::spawn({
-            let tx = tx.clone();
-            move || handle(tx, tid, uffd)
+            let mut tx = tx.clone();
+            move || {
+                handle(&mut tx, tid, uffd);
+                tx.send(MeviEvent::TraceeEvent(tid, TraceePayload::Exit))
+            }
         });
     }
 }
 
-fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
+fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
 
     let send_ev = |payload: TraceePayload| {
@@ -53,7 +56,16 @@ fn handle(tx: mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
     };
 
     loop {
-        let event = uffd.read_event().unwrap().unwrap();
+        let event = match uffd.read_event() {
+            Ok(event) => event.unwrap(),
+            Err(userfaultfd::Error::SystemError(nix::Error::EBADF)) => {
+                warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                return;
+            }
+            Err(e) => {
+                panic!("uffd.read_event failed: {e}");
+            }
+        };
         tracing::debug!("{tid} got {event:?}");
         match event {
             userfaultfd::Event::Pagefault { addr, .. } => {
