@@ -98,12 +98,20 @@ impl Tracer {
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
                     debug!("{pid} caught sig {sig}");
-                    if sig == Signal::SIGTRAP {
-                        // probably ptrace stuff?
-                        ptrace::syscall(pid, None)?;
-                    } else {
-                        // probably not ptrace stuff, forward the signal?
-                        ptrace::syscall(pid, sig)?;
+                    match sig {
+                        Signal::SIGTRAP => {
+                            // probably ptrace stuff?
+                            ptrace::syscall(pid, None)?;
+                        }
+                        Signal::SIGSTOP => {
+                            // probably a new thread after clone?
+                            info!("new thread? {pid}");
+                            ptrace::syscall(pid, None)?;
+                        }
+                        _ => {
+                            // probably not ptrace stuff, forward the signal?
+                            ptrace::syscall(pid, sig)?;
+                        }
                     }
                     continue;
                 }
@@ -162,7 +170,7 @@ impl Tracer {
                         libc::PTRACE_EVENT_VFORK => "vfork".into(),
                         other => format!("unknown event {}", other).into(),
                     };
-                    debug!("{pid} got event {event_name} with sig {sig}");
+                    info!("{pid} got event {event_name} with sig {sig}");
                     ptrace::syscall(pid, None)?;
                 }
                 WaitStatus::Signaled(pid, signal, core_dump) => {
