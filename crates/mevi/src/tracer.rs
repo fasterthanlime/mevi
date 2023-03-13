@@ -284,6 +284,8 @@ impl Tracee {
 
                 if fd == -1 && addr_in == 0 {
                     if self.uffd.is_none() {
+                        info!("will make uffd using mmap'd region of len {len}");
+                        assert!(len > 0x1000);
                         self.make_uffd(regs, ret)?;
                     }
 
@@ -382,7 +384,7 @@ impl Tracee {
             for i in 0..num_words {
                 let word = unsafe { addr.add(i) };
                 let word = unsafe { *word };
-                info!("api word {i}: {:016x}", word);
+                // info!("api word {i}: {:016x}", word);
                 unsafe { ptrace::write(pid, (staging_area + i * WORD_SIZE) as _, word as _)? };
             }
             Ok(())
@@ -393,17 +395,18 @@ impl Tracee {
             for i in 0..num_words {
                 let word_dst = unsafe { addr.add(i) };
                 let word = ptrace::read(pid, (staging_area + i * WORD_SIZE) as _)?;
-                info!("api word {i}: {:016x}", word);
+                // info!("api word {i}: {:016x}", word);
                 unsafe { *word_dst = word as _ };
             }
             Ok(())
         };
 
         info!("making userfaultfd sycall");
-        let raw_uffd = invoke(libc::SYS_userfaultfd, &[])? as i32;
-        if raw_uffd < 0 {
-            panic!("userfaultfd failed with {}", Errno::from_i32(raw_uffd));
+        let ret = invoke(libc::SYS_userfaultfd, &[])? as i32;
+        if ret < 0 {
+            panic!("userfaultfd failed with {}", Errno::from_i32(-ret));
         }
+        let raw_uffd = ret;
         info!("making userfaultfd sycall.. done! got fd {raw_uffd}");
 
         let req_features =
@@ -423,7 +426,10 @@ impl Tracee {
         let ret = invoke(
             libc::SYS_ioctl,
             &[raw_uffd as _, raw::UFFDIO_API as _, staging_area as _],
-        )?;
+        )? as i32;
+        if ret < 0 {
+            panic!("ioctl failed with {ret} / {}", Errno::from_i32(-ret));
+        }
         info!("ioctl returned {ret}");
 
         // read the api struct back from the staging area
@@ -435,7 +441,7 @@ impl Tracee {
         let supported = IoctlFlags::from_bits(api.ioctls).unwrap();
         info!("supported ioctls: {supported:?}");
 
-        let sock_fd = invoke(
+        let ret = invoke(
             libc::SYS_socket,
             &[
                 libc::AF_UNIX as _,
@@ -443,9 +449,10 @@ impl Tracee {
                 0,
             ],
         )? as i32;
-        if sock_fd < 0 {
-            panic!("socket failed with {}", Errno::from_i32(sock_fd));
+        if ret < 0 {
+            panic!("socket failed with {ret} / {}", Errno::from_i32(-ret));
         }
+        let sock_fd = ret;
         info!("socket fd: {sock_fd}");
 
         let mut addr_un = sockaddr_un {
@@ -468,7 +475,7 @@ impl Tracee {
             &[sock_fd as _, staging_area as _, addr_len as _],
         )? as i32;
         if ret < 0 {
-            panic!("connect failed with {}", Errno::from_i32(ret));
+            panic!("connect failed with {ret} / {}", Errno::from_i32(-ret));
         }
         info!("connect returned {ret}");
 
@@ -478,7 +485,7 @@ impl Tracee {
         }
         let ret = invoke(libc::SYS_write, &[sock_fd as _, staging_area as _, 8 as _])? as i32;
         if ret < 0 {
-            panic!("write failed with {}", Errno::from_i32(ret));
+            panic!("write failed with {ret} / {}", Errno::from_i32(-ret));
         }
         info!("write returned {ret}");
 
@@ -545,12 +552,17 @@ impl Tracee {
 
         let ret = invoke(libc::SYS_sendmsg, &[sock_fd as _, staging_area as _, 0])? as i32;
         if ret < 0 {
-            panic!("sendmsg failed with {}", Errno::from_i32(ret));
+            panic!("sendmsg failed with {}", Errno::from_i32(-ret));
         }
         info!("sendmsg returned {ret}");
 
+        // now close the socket
         let ret = invoke(libc::SYS_close, &[sock_fd as _])?;
-        info!("close returned {ret}");
+        info!("close(sock_fd) returned {ret}");
+
+        // now close the uffd
+        let ret = invoke(libc::SYS_close, &[raw_uffd as _])?;
+        info!("close(uffd) returned {ret}");
 
         // now let's clear the staging area again
         for i in 0..(0x1000 / 8) {
