@@ -61,7 +61,9 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
         let event = match uffd.read_event() {
             Ok(event) => event.unwrap(),
             Err(userfaultfd::Error::SystemError(nix::Error::EBADF)) => {
-                warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                warn!("{tid} uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                let ev = MeviEvent::TraceeEvent(tid, TraceePayload::Exit);
+                tx.send(ev).unwrap();
                 return;
             }
             Err(e) => {
@@ -87,6 +89,11 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                                     libc::EBADF => {
                                         warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
                                         return;
+                                    }
+                                    libc::ENOENT => {
+                                        // not sure if this is fine but let's not panic?
+                                        warn!("{tid} ENOENT while zeropaging {addr:?}");
+                                        break;
                                     }
                                     _ => {
                                         panic!("{e}");

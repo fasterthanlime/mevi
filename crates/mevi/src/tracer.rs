@@ -190,6 +190,8 @@ impl Tracer {
                 WaitStatus::Signaled(pid, signal, core_dump) => {
                     let tid: TraceeId = pid.into();
                     info!("{tid} was terminated with signal {signal} with, WCOREDUMP({core_dump})");
+                    let ev = MeviEvent::TraceeEvent(tid, TraceePayload::Exit);
+                    self.tx.send(ev).unwrap();
                 }
                 other => {
                     panic!("unexpected wait status: {:?}", other);
@@ -213,12 +215,32 @@ impl Tracee {
         let ret = regs.rax as usize;
 
         if self.uffd.is_none() {
-            self.make_uffd(regs)?;
+            match regs.orig_rax as _ {
+                libc::SYS_rseq => {
+                    // ignore, too early? cf. https://lwn.net/Articles/883104/
+                }
+                libc::SYS_set_robust_list => {
+                    // too early.
+                }
+                libc::SYS_rt_sigprocmask => {
+                    // too early.
+                }
+                libc::SYS_execve => {
+                    // bad idea
+                }
+                syscall_nr => {
+                    info!(
+                        "{} making uffd on sys_exit for syscall {syscall_nr}",
+                        self.tid
+                    );
+                    self.make_uffd(regs)?;
+                }
+            }
         }
 
         match regs.orig_rax as i64 {
             libc::SYS_execve | libc::SYS_execveat => {
-                debug!("{} will execve, resetting", self.tid);
+                info!("{} will execve, resetting", self.tid);
 
                 self.heap_range = None;
                 self.uffd = None;
@@ -296,7 +318,10 @@ impl Tracee {
                     // good.
                 }
                 other => {
-                    panic!("unexpected wait status: {:?}", other);
+                    panic!(
+                        "{} in make_uffd, unexpected wait status: {:?}",
+                        self.tid, other
+                    );
                 }
             }
 
@@ -367,7 +392,7 @@ impl Tracee {
         };
 
         debug!("making userfaultfd sycall");
-        let ret = invoke(libc::SYS_userfaultfd, &[])? as i32;
+        let ret = invoke(libc::SYS_userfaultfd, &[0])? as i32;
         if ret < 0 {
             panic!("userfaultfd failed with {}", Errno::from_i32(-ret));
         }
