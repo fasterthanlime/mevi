@@ -10,6 +10,7 @@ use std::{
 use color_eyre::Result;
 use libc::user_regs_struct;
 use nix::{
+    errno::Errno,
     sys::{
         ptrace,
         signal::Signal,
@@ -257,7 +258,7 @@ struct Tracee {
     was_in_syscall: bool,
     tid: TraceeId,
     heap_range: Option<Range<usize>>,
-    uffd: Option<Uffd>,
+    uffd: Option<()>,
 }
 
 impl Tracee {
@@ -323,10 +324,10 @@ impl Tracee {
         Ok(None)
     }
 
-    fn make_uffd(&self, saved_regs: user_regs_struct) -> Result<()> {
+    fn make_uffd(&mut self, saved_regs: user_regs_struct) -> Result<()> {
         let pid: Pid = self.tid.into();
 
-        let syscall_step = || {
+        let sys_step = || {
             ptrace::syscall(pid, None)?;
             let waitres = waitpid(pid, None)?;
             match waitres {
@@ -341,21 +342,56 @@ impl Tracee {
             Ok::<_, color_eyre::Report>(())
         };
 
+        let invoke = |nr: i64, args: &[u64]| -> Result<u64> {
+            let mut call_regs = saved_regs;
+            call_regs.rax = nr as _;
+            call_regs.rip -= 2;
+
+            for (i, arg) in args.iter().enumerate() {
+                match i {
+                    0 => call_regs.rdi = *arg,
+                    1 => call_regs.rsi = *arg,
+                    2 => call_regs.rdx = *arg,
+                    3 => call_regs.r10 = *arg,
+                    4 => call_regs.r8 = *arg,
+                    5 => call_regs.r9 = *arg,
+                    _ => panic!("too many args"),
+                }
+            }
+
+            ptrace::setregs(pid, call_regs)?;
+
+            sys_step()?;
+            sys_step()?;
+
+            Ok(ptrace::getregs(pid)?.rax)
+        };
+
         info!("making userfaultfd sycall");
+        let raw_uffd = invoke(libc::SYS_userfaultfd, &[])? as i32;
+        if raw_uffd < 0 {
+            panic!(
+                "ptrace:userfaultfd failed with {}",
+                Errno::from_i32(raw_uffd)
+            );
+        }
+        info!("making userfaultfd sycall.. done! got fd {raw_uffd}");
+
+        let ret = invoke(
+            libc::SYS_ioctl,
+            &[
+                raw_uffd as _,
+                userfaultfd::raw::UFFDIO_API as _,
+                todo!("address of api struct"),
+            ],
+        )?;
+        panic!("ptrace:ioctl returned {ret}");
+
         let mut call_regs = saved_regs;
-        // size of `syscall` is 2 bytes, rewind!
         call_regs.rip -= 2;
-        call_regs.rax = libc::SYS_userfaultfd as _;
-        ptrace::setregs(pid, call_regs)?;
+        call_regs.rax = libc::SYS_ioctl as _;
 
-        syscall_step()?;
-        syscall_step()?;
-
-        let ret_regs = ptrace::getregs(pid)?;
-        println!(
-            "ret = {}, ret_regs after userfaultfd: {ret_regs:?}",
-            ret_regs.rax
-        );
+        self.uffd = Some(());
 
         ptrace::setregs(pid, saved_regs)?;
         Ok(())
