@@ -28,7 +28,7 @@ pub(crate) fn run(
         let mut pid_bytes = [0u8; 8];
         stream.read_exact(&mut pid_bytes).unwrap();
 
-        let tid = TraceeId(u64::from_be_bytes(pid_bytes));
+        let tid = TraceeId(u64::from_le_bytes(pid_bytes));
 
         let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
         info!("{tid} received uffd {}", uffd.as_raw_fd());

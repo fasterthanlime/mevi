@@ -20,7 +20,7 @@ fn ctor() {
 
     let mut stream = UnixStream::connect("/tmp/mevi.sock").unwrap();
     let pid: u64 = std::process::id() as _;
-    let pid_bytes = pid.to_be_bytes();
+    let pid_bytes = pid.to_le_bytes();
     stream.write_all(&pid_bytes).unwrap();
 
     stream.send_fd(uffd.as_raw_fd()).unwrap();

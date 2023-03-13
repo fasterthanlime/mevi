@@ -330,10 +330,6 @@ impl Tracee {
     fn make_uffd(&mut self, saved_regs: user_regs_struct, staging_area: usize) -> Result<()> {
         let pid: Pid = self.tid.into();
 
-        const AF_UNIX: u64 = 0x1;
-        const SOCK_STREAM: u64 = 0x1;
-        const SOCK_CLOEXEC: u64 = 0x80000;
-
         const WORD_SIZE: usize = 8;
         assert_eq!(
             std::mem::size_of::<usize>(),
@@ -439,14 +435,21 @@ impl Tracee {
         let supported = IoctlFlags::from_bits(api.ioctls).unwrap();
         info!("supported ioctls: {supported:?}");
 
-        let sock_fd = invoke(libc::SYS_socket, &[AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0])? as i32;
+        let sock_fd = invoke(
+            libc::SYS_socket,
+            &[
+                libc::AF_UNIX as _,
+                (libc::SOCK_STREAM | libc::SOCK_CLOEXEC) as _,
+                0,
+            ],
+        )? as i32;
         if sock_fd < 0 {
             panic!("socket failed with {}", Errno::from_i32(sock_fd));
         }
         info!("socket fd: {sock_fd}");
 
         let mut addr_un = sockaddr_un {
-            sun_family: AF_UNIX as _,
+            sun_family: libc::AF_UNIX as _,
             sun_path: [0; 108],
         };
         let sock_path = b"/tmp/mevi.sock\0";
@@ -468,6 +471,86 @@ impl Tracee {
             panic!("connect failed with {}", Errno::from_i32(ret));
         }
         info!("connect returned {ret}");
+
+        // now let's write the pid
+        unsafe {
+            ptrace::write(pid, staging_area as _, pid.as_raw() as u64 as _)?;
+        }
+        let ret = invoke(libc::SYS_write, &[sock_fd as _, staging_area as _, 8 as _])? as i32;
+        if ret < 0 {
+            panic!("write failed with {}", Errno::from_i32(ret));
+        }
+        info!("write returned {ret}");
+
+        // this is the big one: sendmsg.
+        let mut msghdr = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: std::ptr::null_mut(),
+            msg_iovlen: 0,
+            msg_control: std::ptr::null_mut(),
+            msg_controllen: 24,
+            msg_flags: 0,
+        };
+
+        // here's our data layout.
+        //
+        // staging_area
+        // [ msghdr ] [ payload ] [  iovec  ] [ cmsghdr | cmsg_data ]
+        // 0x0        0x100       0x200       0x300
+        //
+
+        // write payload
+        unsafe {
+            ptrace::write(pid, (staging_area + 0x100) as _, 0x0 as _)?;
+        }
+
+        // write iovec
+        let iovec = libc::iovec {
+            iov_base: (staging_area + 0x100) as _,
+            iov_len: 4,
+        };
+        unsafe {
+            #[allow(clippy::identity_op)]
+            ptrace::write(pid, (staging_area + 0x200 + 0) as _, iovec.iov_base)?;
+            ptrace::write(pid, (staging_area + 0x200 + 8) as _, iovec.iov_len as _)?;
+        }
+
+        msghdr.msg_iov = (staging_area + 0x200) as _;
+        msghdr.msg_iovlen = 1;
+
+        // write cmsghdr
+        let cmsghdr = libc::cmsghdr {
+            cmsg_len: 20,
+            cmsg_level: libc::SOL_SOCKET,
+            cmsg_type: libc::SCM_RIGHTS,
+        };
+        unsafe {
+            #[allow(clippy::identity_op)]
+            ptrace::write(pid, (staging_area + 0x300 + 0) as _, cmsghdr.cmsg_len as _)?;
+
+            let cmsg_level_ptr: *const u64 = std::mem::transmute(&cmsghdr.cmsg_level);
+            ptrace::write(pid, (staging_area + 0x300 + 8) as _, *cmsg_level_ptr as _)?;
+
+            ptrace::write(pid, (staging_area + 0x300 + 16) as _, raw_uffd as _)?;
+        }
+
+        msghdr.msg_control = (staging_area + 0x300) as _;
+        msghdr.msg_controllen = 24;
+
+        write_to_staging(
+            unsafe { std::mem::transmute(&msghdr) },
+            std::mem::size_of_val(&msghdr),
+        )?;
+
+        let ret = invoke(libc::SYS_sendmsg, &[sock_fd as _, staging_area as _, 0])? as i32;
+        if ret < 0 {
+            panic!("sendmsg failed with {}", Errno::from_i32(ret));
+        }
+        info!("sendmsg returned {ret}");
+
+        let ret = invoke(libc::SYS_close, &[sock_fd as _])?;
+        info!("close returned {ret}");
 
         self.uffd = Some(());
 
