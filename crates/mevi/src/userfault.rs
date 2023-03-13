@@ -10,7 +10,7 @@ use std::{
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
 use tracing::{info, warn};
-use userfaultfd::Uffd;
+use userfaultfd::{raw, FeatureFlags, IoctlFlags, Uffd};
 
 use crate::{ConnectSource, MeviEvent, PendingUffdsHandle, TraceeId, TraceePayload};
 
@@ -108,7 +108,28 @@ fn handle(puh: PendingUffdsHandle, tx: mpsc::SyncSender<MeviEvent>, tid: TraceeI
                 send_ev(TraceePayload::Unmap { range: start..end });
             }
             userfaultfd::Event::Fork { uffd } => {
-                info!("{tid} Got a fork! The child's uffd is {:?}", uffd);
+                info!("{tid} uffd fork notif! the child uffd is {:?}", uffd);
+
+                // FIXME: turns out the API handshake is already done by
+                // the time the fd is dup'd? I'm very confused.
+                //
+                // info!("{tid} performing API handshake with child uffd");
+                // let req_features = FeatureFlags::EVENT_REMAP
+                //     | FeatureFlags::EVENT_REMOVE
+                //     | FeatureFlags::EVENT_UNMAP
+                //     | FeatureFlags::EVENT_FORK;
+                // let mut api = raw::uffdio_api {
+                //     api: raw::UFFD_API,
+                //     features: req_features.bits(),
+                //     ioctls: 0,
+                // };
+                // unsafe {
+                //     raw::api(uffd.as_raw_fd(), &mut api as *mut raw::uffdio_api).unwrap();
+                // }
+                // let supported = IoctlFlags::from_bits(api.ioctls)
+                //     .expect("unknown ioctl flags returned by kernel");
+                // info!("{tid} supported ioctls: {supported:?}");
+
                 {
                     let mut puh = puh.lock().unwrap();
                     puh.entry(tid).or_default().push_back(uffd);
