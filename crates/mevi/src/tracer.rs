@@ -358,6 +358,9 @@ impl Tracee {
             Ok(ptrace::getregs(pid)?.rax)
         };
 
+        let actual_pid = invoke(libc::SYS_getpid, &[])?;
+        info!("{} has PID {}", tid, actual_pid);
+
         debug!("allocate staging area");
         let staging_area = invoke(
             libc::SYS_mmap,
@@ -567,29 +570,29 @@ impl Tracee {
 
         ptrace::setregs(pid, saved_regs)?;
 
-        info!("{tid} now let's query proc maps");
-        let maps = proc_maps::get_process_maps(tid.0 as _)?;
-        for map in maps {
-            if map.filename().is_none() && map.is_read() && map.is_write() {
-                info!(
-                    "- {:x?}..{:x?} R={}, W={} {map:?}",
-                    map.start(),
-                    map.start() + map.size(),
-                    map.is_read(),
-                    map.is_write()
-                );
-                tx.send(MeviEvent::TraceeEvent(
-                    tid,
-                    TraceePayload::Map {
-                        range: map.start()..map.start() + map.size(),
-                        state: MemState::NotResident,
-                        _guard: MapGuard { _inner: None },
-                    },
-                ))
-                .unwrap();
-                info!("Let's hope that's not a race condition");
-            }
-        }
+        // info!("{tid} now let's query proc maps");
+        // let maps = proc_maps::get_process_maps(tid.0 as _)?;
+        // for map in maps {
+        //     if map.filename().is_none() && map.is_read() && map.is_write() {
+        //         info!(
+        //             "- {:x?}..{:x?} R={}, W={} {map:?}",
+        //             map.start(),
+        //             map.start() + map.size(),
+        //             map.is_read(),
+        //             map.is_write()
+        //         );
+        //         tx.send(MeviEvent::TraceeEvent(
+        //             tid,
+        //             TraceePayload::Map {
+        //                 range: map.start()..map.start() + map.size(),
+        //                 state: MemState::NotResident,
+        //                 _guard: MapGuard { _inner: None },
+        //             },
+        //         ))
+        //         .unwrap();
+        //         info!("Let's hope that's not a race condition");
+        //     }
+        // }
 
         Ok(())
     }
