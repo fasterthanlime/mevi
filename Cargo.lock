@@ -1043,6 +1043,7 @@ dependencies = [
  "nix",
  "rangemap",
  "serde",
+ "tracing",
 ]
 
 [[package]]

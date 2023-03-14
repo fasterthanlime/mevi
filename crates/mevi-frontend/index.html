@@ -20,18 +20,19 @@
         body {
             background: var(--body-bg);
             color: #fafafa;
-            margin: 20px;
+            margin: 0px;
         }
 
         * {
-            font-family: 'Share Tech Mono', monospace;
+            /* font-family: 'Share Tech Mono', monospace; */
+            font-family: 'Source Code Pro', monospace;
             font-size: 16px;
         }
 
         .mem-stats-container {
             position: sticky;
             top: 0em;
-            padding: 1em 0;
+            padding: .3em;
 
             display: flex;
             flex-direction: row;
@@ -64,9 +65,10 @@
         }
 
         .process {
-            border-radius: 4px;
-            margin-right: 1em;
             margin-bottom: 1em;
+            border-top: 1px dashed rgba(255, 255, 255, 0.3);
+            padding-top: .3em;
+            padding-left: .3em;
         }
 
         .process-info {
@@ -101,15 +103,21 @@
         }
 
         .group-outer {
-            margin-top: 1em;
+            margin-top: .3em;
             display: flex;
             flex-direction: row;
             align-items: center;
-            padding-left: 2em;
+            /* padding-left: 2em; */
         }
 
         .group-header {
             margin-right: 1em;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .group-header .scale {
+            font-size: 80%;
         }
 
         .group {

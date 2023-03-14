@@ -73,6 +73,7 @@ fn app() -> Html {
 
     // const KEY_SHR: u64 = 40;
     // const KEY_SHR: u64 = 32;
+    // const KEY_SHR: u64 = 30;
     const KEY_SHR: u64 = 24;
 
     let formatter = make_format(BINARY);
@@ -88,7 +89,7 @@ fn app() -> Html {
                         <>
                             <div class="process">
                                 <div class="process-info">
-                                    <span class="pid">{tracee.tid.0}</span>
+                                    <span class="pid">{"PID "}{tracee.tid.0}</span>
                                     {{
                                         // collect virt/rss stats for process
                                         let mut virt: u64 = 0;
@@ -144,13 +145,6 @@ fn app() -> Html {
                                         });
                                     }
 
-                                    // let largest_group = group_infos.values().map(|info| info.size).max().unwrap_or_default();
-                                    // let mut max_mb: u64 = 4 * 1024 * 1024;
-                                    // while max_mb < largest_group {
-                                    //     max_mb *= 2;
-                                    // }
-                                    // let max_mb = max_mb as f64;
-
                                     let groups = map.iter().group_by(|(range, _)| (range.start >> KEY_SHR));
                                     let mut groups_markup = vec![];
 
@@ -159,11 +153,11 @@ fn app() -> Html {
                                         let mut group_start = None;
                                         let group_info = &group_infos[&key];
 
-                                        let mut max_mb: u64 = 4 * 1024 * 1024;
+                                        let mut max_mb: u64 = 16 * 1024;
                                         while max_mb < group_info.size {
                                             max_mb *= 2;
                                         }
-                                        let max_mb = max_mb as f64;
+                                        let max_mb_f = max_mb as f64;
 
                                         for (range, mem_state) in group {
                                             if group_start.is_none() {
@@ -175,7 +169,7 @@ fn app() -> Html {
                                                 continue;
                                             }
 
-                                            let style = format!("width: {}%; left: {}%;", size as f64 / max_mb * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb * 100.0);
+                                            let style = format!("width: {}%; left: {}%;", size as f64 / max_mb_f * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb_f * 100.0);
                                             group_markup.push(html! {
                                                 <i class={format!("{:?}", mem_state)} title={formatter(size).to_string()} style={style}>{
                                                     // if size > 4 * 1024 * 1024 {
@@ -192,7 +186,12 @@ fn app() -> Html {
                                             groups_markup.push(html! {
                                                 <div class="group-outer">
                                                     <div class="group-header">
-                                                        { format!("{:#x}", group_infos[&key].start) }
+                                                        <span>
+                                                            { format!("{:x}", group_infos[&key].start) }
+                                                        </span>
+                                                        <span class="scale">
+                                                            { format!("{} scale", formatter(max_mb)) }
+                                                        </span>
                                                     </div>
                                                     <div class="group">
                                                         { group_markup }

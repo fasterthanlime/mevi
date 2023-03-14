@@ -2,6 +2,7 @@ use std::{fmt, ops::Range, sync::mpsc};
 
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum MemState {
@@ -119,6 +120,7 @@ impl TraceePayload {
                 map.insert(range.clone(), MemState::Resident);
             }
             TraceePayload::PageOut { range } => {
+                info!("page out: {:x?}", range);
                 map.insert(range.clone(), MemState::NotResident);
             }
             TraceePayload::Unmap { range } => {
@@ -129,9 +131,55 @@ impl TraceePayload {
                 new_range,
                 _guard,
             } => {
-                // FIXME: that's not right - we should retain the memory state
-                map.insert(old_range.clone(), MemState::Unmapped);
-                map.insert(new_range.clone(), MemState::NotResident);
+                if old_range.start == new_range.start {
+                    // we either grew in place or shrunk
+
+                    // if we shrunk, unmap the extra pages
+                    if new_range.end < old_range.end {
+                        map.remove(new_range.end..old_range.end);
+                    }
+                } else {
+                    // the new range is elsewhere - we need to copy the state
+                    let mut merge_state = MemMap::default();
+                    // by default everything is non-resident
+                    merge_state.insert(new_range.clone(), MemState::NotResident);
+
+                    // now copy over old state
+                    for (old_subrange, old_state) in map.overlapping(old_range) {
+                        let mut subrange = old_subrange.clone();
+                        // clamp to old range
+                        if subrange.start < old_range.start {
+                            subrange.start = old_range.start;
+                        }
+                        if subrange.end > old_range.end {
+                            subrange.end = old_range.end;
+                        }
+
+                        // remap to new range
+                        if new_range.start < old_range.start {
+                            // new range is to the left of old range
+                            let diff = old_range.start.checked_sub(new_range.start).unwrap();
+                            subrange.start -= diff;
+                            subrange.end -= diff;
+                        } else {
+                            // new range is to the right of old range (or didn't move)
+                            let diff = new_range.start.checked_sub(old_range.start).unwrap();
+                            subrange.start += diff;
+                            subrange.end += diff;
+                        }
+
+                        merge_state.insert(subrange, *old_state);
+                    }
+
+                    // now remove old range
+                    map.remove(old_range.clone());
+
+                    // and merge in the new state
+                    for (subrange, state) in merge_state.into_iter() {
+                        info!("remap: {:x?} = {:?}", subrange, state);
+                        map.insert(subrange, state);
+                    }
+                }
             }
             TraceePayload::Batch { batch } => {
                 for (range, mem_state) in batch.iter() {
