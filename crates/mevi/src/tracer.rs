@@ -4,6 +4,7 @@ use std::{
 };
 
 use color_eyre::Result;
+use humansize::{make_format, BINARY};
 use libc::{sockaddr_un, user_regs_struct};
 use nix::{
     errno::Errno,
@@ -149,9 +150,11 @@ impl Tracer {
                                 );
                             }
 
-                            debug!(
-                                "{} thread of {} Sending Map {range:x?} {resident:?}",
-                                tracee.tid, for_tid
+                            info!(
+                                "{} thread of {} sending {} map {range:x?} {resident:?}",
+                                tracee.tid,
+                                for_tid,
+                                make_format(BINARY)(range.end - range.start),
                             );
                             let ev = MeviEvent::TraceeEvent(
                                 for_tid,

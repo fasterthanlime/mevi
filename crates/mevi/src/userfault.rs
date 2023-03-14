@@ -7,6 +7,7 @@ use std::{
     sync::mpsc,
 };
 
+use humansize::{make_format, BINARY};
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
 use tracing::{debug, info, warn};
@@ -125,6 +126,8 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             userfaultfd::Event::Unmap { start, end } => {
                 let start = start as usize;
                 let end = end as usize;
+
+                info!("{} sending {} unmap", tid, make_format(BINARY)(end - start));
                 send_ev(TraceePayload::Unmap { range: start..end });
             }
             other => {
