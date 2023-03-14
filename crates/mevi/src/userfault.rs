@@ -140,7 +140,15 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             userfaultfd::Event::Remove { start, end } => {
                 let start = start as usize;
                 let end = end as usize;
-                send_ev(TraceePayload::PageOut { range: start..end });
+
+                info!(
+                    "{} got uffd remove event {:x?}, len = {}",
+                    tid,
+                    start..end,
+                    make_format(BINARY)(end - start),
+                );
+
+                // send_ev(TraceePayload::PageOut { range: start..end });
             }
             userfaultfd::Event::Unmap { start, end } => {
                 let start = start as usize;
@@ -152,7 +160,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                     start..end,
                     make_format(BINARY)(end - start),
                 );
-                send_ev(TraceePayload::Unmap { range: start..end });
+                // send_ev(TraceePayload::Unmap { range: start..end });
             }
             other => {
                 warn!("unhandled uffd event: {:?}", other);

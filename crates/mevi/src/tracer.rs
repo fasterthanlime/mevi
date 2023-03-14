@@ -31,10 +31,26 @@ struct Tracer {
     tracees: HashMap<TraceeId, Tracee>,
 }
 
-struct Mapped {
+struct MemoryEvent {
     for_tid: TraceeId,
-    range: Range<usize>,
-    resident: MemState,
+    change: MemoryChange,
+}
+
+enum MemoryChange {
+    Map {
+        range: Range<usize>,
+        state: MemState,
+    },
+    Remap {
+        old_range: Range<usize>,
+        new_range: Range<usize>,
+    },
+    Unmap {
+        range: Range<usize>,
+    },
+    PageOut {
+        range: Range<usize>,
+    },
 }
 
 impl Tracer {
@@ -136,13 +152,9 @@ impl Tracer {
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
 
-                        if let Some(Mapped {
-                            range,
-                            resident,
-                            for_tid,
-                        }) = tracee.on_sys_exit(&mut self.tx)?
+                        if let Some(MemoryEvent { for_tid, change }) =
+                            tracee.on_sys_exit(&mut self.tx)?
                         {
-                            let (tx, rx) = mpsc::channel();
                             if matches!(tracee.kind, TraceeKind::Unknown) {
                                 warn!(
                                     "{} unknown tracee kind, and Mapped, assuming process",
@@ -150,25 +162,51 @@ impl Tracer {
                                 );
                             }
 
-                            info!(
-                                "{} thread of {} sending {} map {range:x?} {resident:?}",
-                                tracee.tid,
-                                for_tid,
-                                make_format(BINARY)(range.end - range.start),
-                            );
-                            let ev = MeviEvent::TraceeEvent(
-                                for_tid,
-                                TraceePayload::Map {
-                                    range,
-                                    state: resident,
-                                    _guard: MapGuard { _inner: Some(tx) },
-                                },
-                            );
-                            self.tx.send(ev).unwrap();
-
-                            // this will fail, because it's been dropped. but it'll
-                            // wait until it's dropped, which is what we want
-                            _ = rx.recv();
+                            match change {
+                                MemoryChange::Map { range, state } => {
+                                    let (tx, rx) = mpsc::channel();
+                                    let ev = MeviEvent::TraceeEvent(
+                                        for_tid,
+                                        TraceePayload::Map {
+                                            range,
+                                            state,
+                                            _guard: MapGuard { _inner: Some(tx) },
+                                        },
+                                    );
+                                    self.tx.send(ev).unwrap();
+                                    _ = rx.recv(); // wait for event to be processed
+                                }
+                                MemoryChange::Remap {
+                                    old_range,
+                                    new_range,
+                                } => {
+                                    let (tx, rx) = mpsc::channel();
+                                    let ev = MeviEvent::TraceeEvent(
+                                        for_tid,
+                                        TraceePayload::Remap {
+                                            old_range,
+                                            new_range,
+                                            _guard: MapGuard { _inner: Some(tx) },
+                                        },
+                                    );
+                                    self.tx.send(ev).unwrap();
+                                    _ = rx.recv(); // wait for event to be processed
+                                }
+                                MemoryChange::Unmap { range } => {
+                                    let ev = MeviEvent::TraceeEvent(
+                                        for_tid,
+                                        TraceePayload::Unmap { range },
+                                    );
+                                    self.tx.send(ev).unwrap();
+                                }
+                                MemoryChange::PageOut { range } => {
+                                    let ev = MeviEvent::TraceeEvent(
+                                        for_tid,
+                                        TraceePayload::PageOut { range },
+                                    );
+                                    self.tx.send(ev).unwrap();
+                                }
+                            }
                         }
                         if let Err(e) = ptrace::syscall(pid, None) {
                             if e == nix::errno::Errno::ESRCH {
@@ -236,7 +274,7 @@ enum TraceeKind {
 }
 
 impl Tracee {
-    fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<Mapped>> {
+    fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<MemoryEvent>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax as usize;
@@ -292,10 +330,16 @@ impl Tracee {
                     && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
                 {
                     info!("{} thread of {for_tid} just did mmap addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd}", self.tid);
-                    return Ok(Some(Mapped {
+                    return Ok(Some(MemoryEvent {
                         for_tid,
-                        range: ret..ret + len,
-                        resident: MemState::NotResident,
+                        change: MemoryChange::Map {
+                            range: ret..ret + len,
+                            state: if map_flags.contains(MapFlags::MAP_POPULATE) {
+                                MemState::Resident
+                            } else {
+                                MemState::NotResident
+                            },
+                        },
                     }));
                 }
             }
@@ -313,12 +357,58 @@ impl Tracee {
                     info!("{} thread of {for_tid} just did mremap addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
                 }
 
-                return Ok(Some(Mapped {
+                return Ok(Some(MemoryEvent {
                     for_tid,
-                    range: new_addr..new_addr + new_len,
-                    // FIXME: the resident state depends on what the old range was
-                    resident: MemState::NotResident,
+                    change: MemoryChange::Remap {
+                        old_range: addr..addr + old_len,
+                        new_range: new_addr..new_addr + new_len,
+                    },
                 }));
+            }
+            libc::SYS_munmap => {
+                let addr = regs.rdi as usize;
+                let len = regs.rsi as usize;
+
+                {
+                    let formatter = make_format(BINARY);
+                    let len = formatter(len);
+                    info!(
+                        "{} thread of {for_tid} just did munmap addr={addr:x?} len={len}",
+                        self.tid
+                    );
+                }
+
+                return Ok(Some(MemoryEvent {
+                    for_tid,
+                    change: MemoryChange::Unmap {
+                        range: addr..addr + len,
+                    },
+                }));
+            }
+            libc::SYS_madvise => {
+                let addr = regs.rdi as usize;
+                let len = regs.rsi as usize;
+                let advice = regs.rdx as i32;
+
+                match advice {
+                    libc::MADV_DONTNEED | libc::MADV_REMOVE => {
+                        {
+                            let formatter = make_format(BINARY);
+                            let len = formatter(len);
+                            info!("{} thread of {for_tid} just did madvise-dontneed/remove addr={addr:x?} len={len} advice={advice}", self.tid);
+                        }
+
+                        return Ok(Some(MemoryEvent {
+                            for_tid,
+                            change: MemoryChange::PageOut {
+                                range: addr..addr + len,
+                            },
+                        }));
+                    }
+                    _ => {
+                        // ignore
+                    }
+                }
             }
             libc::SYS_brk => {
                 // FIXME: calling brk from a thread should mutate the heap of
@@ -333,12 +423,24 @@ impl Tracee {
                         heap_range.end = ret;
 
                         if heap_range.end > old_top {
-                            // heap just grew - shrinking will be handled by
-                            // userfaultfd
-                            return Ok(Some(Mapped {
+                            // heap just grew
+                            info!("heap grew from {old_top:x?} to {:x?}", heap_range.end);
+                            return Ok(Some(MemoryEvent {
                                 for_tid,
-                                range: old_top..heap_range.end,
-                                resident: MemState::Resident,
+                                change: MemoryChange::Map {
+                                    range: old_top..heap_range.end,
+                                    state: MemState::Resident,
+                                },
+                            }));
+                        }
+                        if heap_range.end < old_top {
+                            // heap just shrunk
+                            info!("heap shrunk from {old_top:x?} to {:x?}", heap_range.end);
+                            return Ok(Some(MemoryEvent {
+                                for_tid,
+                                change: MemoryChange::Unmap {
+                                    range: heap_range.end..old_top,
+                                },
                             }));
                         }
                     }

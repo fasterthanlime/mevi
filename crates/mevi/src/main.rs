@@ -123,6 +123,7 @@ enum TraceePayload {
     Remap {
         old_range: Range<usize>,
         new_range: Range<usize>,
+        _guard: MapGuard,
     },
     Batch {
         batch: MemMap,
@@ -365,6 +366,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             TraceePayload::Remap {
                 old_range,
                 new_range,
+                _guard,
             } => {
                 let formatter = make_format(BINARY);
                 warn!(
@@ -375,7 +377,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
 
                 // FIXME: that's not right - we should retain the memory state
                 tracee.map.remove(old_range);
-                tracee.map.insert(new_range, MemState::Resident);
+                tracee.map.insert(new_range, MemState::NotResident);
             }
             TraceePayload::Batch { .. } => {
                 unreachable!()

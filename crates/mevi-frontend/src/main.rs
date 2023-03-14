@@ -76,6 +76,7 @@ enum TraceePayload {
     Remap {
         old_range: Range<u64>,
         new_range: Range<u64>,
+        _guard: MapGuard,
     },
     Batch {
         batch: MemMap,
@@ -314,10 +315,11 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
         TraceePayload::Remap {
             old_range,
             new_range,
+            _guard,
         } => {
+            // FIXME: that's not right - we should retain the memory state
             tracee.map.insert(old_range, MemState::Unmapped);
-            // FIXME: this is wrong but eh.
-            tracee.map.insert(new_range, MemState::Resident);
+            tracee.map.insert(new_range, MemState::NotResident);
         }
         TraceePayload::Batch { batch } => {
             for (range, mem_state) in batch.into_iter() {
