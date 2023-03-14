@@ -277,11 +277,11 @@ impl Tracee {
                 return Ok(None);
             }
             libc::SYS_mmap => {
-                let fd = regs.r8 as i32;
                 let addr_in = regs.rdi;
                 let len = regs.rsi as usize;
                 let prot = regs.rdx;
                 let flags = regs.r10;
+                let fd = regs.r8 as i32;
                 let map_flags = MapFlags::from_bits(flags as _).unwrap();
                 let prot_flags = ProtFlags::from_bits(prot as _).unwrap();
                 let _ = (map_flags, prot_flags);
@@ -291,12 +291,26 @@ impl Tracee {
                     && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
                     && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
                 {
-                    info!("{} thread of {for_tid} doing mmap addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd}", self.tid);
+                    info!("{} thread of {for_tid} just did mmap addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd}", self.tid);
                     return Ok(Some(Mapped {
                         for_tid,
                         range: ret..ret + len,
                         resident: MemState::NotResident,
                     }));
+                }
+            }
+            libc::SYS_mremap => {
+                let addr = regs.rdi as usize;
+                let old_len = regs.rsi as usize;
+                let new_len = regs.rdx as usize;
+                let flags = regs.r10;
+                let new_addr = ret;
+
+                {
+                    let formatter = make_format(BINARY);
+                    let old_len = formatter(old_len);
+                    let new_len = formatter(new_len);
+                    info!("{} thread of {for_tid} just did mremap addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
                 }
             }
             libc::SYS_brk => {

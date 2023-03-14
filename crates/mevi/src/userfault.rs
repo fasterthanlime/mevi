@@ -76,30 +76,40 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             userfaultfd::Event::Pagefault { addr, .. } => {
                 unsafe {
                     loop {
-                        match uffd.zeropage(addr, page_size, true) {
+                        let res = uffd.zeropage(addr, page_size, true);
+                        // eprintln!("trying to zeropage {addr:p}, size {page_size:x?}");
+                        match res {
                             Ok(_) => {
                                 // cool!
                                 break;
                             }
                             Err(e) => match e {
-                                userfaultfd::Error::ZeropageFailed(errno) => match errno as i32 {
-                                    libc::EAGAIN => {
-                                        // this is actually fine, just try it again
-                                        continue;
+                                userfaultfd::Error::ZeropageFailed(errno) => {
+                                    match errno as i32 {
+                                        libc::EAGAIN => {
+                                            // this is actually fine, just try it again
+
+                                            // debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, continuing");
+                                            // continue;
+
+                                            // maybe this isn't fine?
+                                            debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
+                                            break;
+                                        }
+                                        libc::EBADF => {
+                                            warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                                            return;
+                                        }
+                                        libc::ENOENT => {
+                                            // not sure if this is fine but let's not panic?
+                                            warn!("{tid} ENOENT while zeropaging {addr:?}");
+                                            break;
+                                        }
+                                        _ => {
+                                            panic!("{e}");
+                                        }
                                     }
-                                    libc::EBADF => {
-                                        warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
-                                        return;
-                                    }
-                                    libc::ENOENT => {
-                                        // not sure if this is fine but let's not panic?
-                                        warn!("{tid} ENOENT while zeropaging {addr:?}");
-                                        break;
-                                    }
-                                    _ => {
-                                        panic!("{e}");
-                                    }
-                                },
+                                }
                                 _ => unreachable!(),
                             },
                         }
@@ -113,6 +123,15 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             userfaultfd::Event::Remap { from, to, len } => {
                 let from = from as usize;
                 let to = to as usize;
+
+                info!(
+                    "{} got uffd remap event,  {:x?}.. => {:x?}, len = {}",
+                    tid,
+                    from,
+                    to,
+                    make_format(BINARY)(len),
+                );
+
                 send_ev(TraceePayload::Remap {
                     old_range: from..from + len,
                     new_range: to..to + len,
@@ -128,10 +147,10 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let end = end as usize;
 
                 info!(
-                    "{} sending {} unmap {:x?}",
+                    "{} got uffd unmap event {:x?}, len = {}",
                     tid,
+                    start..end,
                     make_format(BINARY)(end - start),
-                    start..end
                 );
                 send_ev(TraceePayload::Unmap { range: start..end });
             }
