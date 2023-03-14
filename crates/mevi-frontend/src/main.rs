@@ -1,90 +1,16 @@
-use std::{borrow::Cow, collections::HashMap, ops::Range};
+use std::{borrow::Cow, collections::HashMap};
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
 use itertools::Itertools;
-use rangemap::RangeMap;
-use serde::{Deserialize, Serialize};
+use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
-
-type MemMap = RangeMap<u64, MemState>;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-enum MemState {
-    Resident,
-    NotResident,
-    Unmapped,
-    Untracked,
-}
 
 struct GroupInfo {
     start: u64,
     size: u64,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
-#[serde(transparent)]
-struct TraceeId(u64);
-
-#[derive(Debug, Deserialize)]
-enum MeviEvent {
-    Snapshot(Vec<TraceeSnapshot>),
-    TraceeEvent(TraceeId, TraceePayload),
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TraceeSnapshot {
-    tid: TraceeId,
-    cmdline: Vec<String>,
-    map: MemMap,
-}
-
-#[derive(Debug, Deserialize)]
-struct MapGuard {
-    #[serde(skip)]
-    _inner: Option<()>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-enum ConnectSource {
-    Uds,
-}
-
-#[derive(Debug, Deserialize)]
-enum TraceePayload {
-    Map {
-        range: Range<u64>,
-        state: MemState,
-        _guard: MapGuard,
-    },
-    Connected {
-        _source: ConnectSource,
-        _uffd: u64,
-    },
-    Execve,
-    PageIn {
-        range: Range<u64>,
-    },
-    PageOut {
-        range: Range<u64>,
-    },
-    Unmap {
-        range: Range<u64>,
-    },
-    Remap {
-        old_range: Range<u64>,
-        new_range: Range<u64>,
-        _guard: MapGuard,
-    },
-    Batch {
-        batch: MemMap,
-    },
-    Start {
-        cmdline: Vec<String>,
-    },
-    Exit,
 }
 
 #[derive(Clone)]
