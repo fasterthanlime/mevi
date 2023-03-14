@@ -312,6 +312,13 @@ impl Tracee {
                     let new_len = formatter(new_len);
                     info!("{} thread of {for_tid} just did mremap addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
                 }
+
+                return Ok(Some(Mapped {
+                    for_tid,
+                    range: new_addr..new_addr + new_len,
+                    // FIXME: the resident state depends on what the old range was
+                    resident: MemState::NotResident,
+                }));
             }
             libc::SYS_brk => {
                 // FIXME: calling brk from a thread should mutate the heap of

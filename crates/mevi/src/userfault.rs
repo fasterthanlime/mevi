@@ -132,10 +132,10 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                     make_format(BINARY)(len),
                 );
 
-                send_ev(TraceePayload::Remap {
-                    old_range: from..from + len,
-                    new_range: to..to + len,
-                });
+                // send_ev(TraceePayload::Remap {
+                //     old_range: from..from + len,
+                //     new_range: to..to + len,
+                // });
             }
             userfaultfd::Event::Remove { start, end } => {
                 let start = start as usize;
