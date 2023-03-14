@@ -107,11 +107,11 @@ impl Tracer {
                 }
             };
 
-            trace!("wait_status: {:?}", wait_status.yellow());
+            tracing::debug!("wait_status: {:?}", wait_status.yellow());
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
                     let tid: TraceeId = pid.into();
-                    debug!("{tid} caught sig {sig}");
+                    info!("{tid} caught sig {sig}");
                     match sig {
                         Signal::SIGTRAP => {
                             // probably ptrace stuff?
@@ -328,11 +328,12 @@ impl Tracee {
                     && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
                     && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
                 {
-                    info!("{} thread of {for_tid} just did mmap addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd}", self.tid);
+                    let range = ret..ret + len;
+                    info!("{} thread of {for_tid} just did mmap {range:x?} addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd} ret={ret:x?}", self.tid);
                     return Ok(Some(MemoryEvent {
                         for_tid,
                         change: MemoryChange::Map {
-                            range: ret..ret + len,
+                            range,
                             state: if map_flags.contains(MapFlags::MAP_POPULATE) {
                                 MemState::Resident
                             } else {
@@ -349,39 +350,41 @@ impl Tracee {
                 let flags = regs.r10;
                 let new_addr = ret;
 
+                let old_range = addr..addr + old_len;
+                let new_range = new_addr..new_addr + new_len;
+
                 {
                     let formatter = make_format(BINARY);
                     let old_len = formatter(old_len);
                     let new_len = formatter(new_len);
-                    info!("{} thread of {for_tid} just did mremap addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
+                    info!("{} thread of {for_tid} just did mremap {old_range:x?} => {new_range:x?} addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
                 }
 
                 return Ok(Some(MemoryEvent {
                     for_tid,
                     change: MemoryChange::Remap {
-                        old_range: addr..addr + old_len,
-                        new_range: new_addr..new_addr + new_len,
+                        old_range,
+                        new_range,
                     },
                 }));
             }
             libc::SYS_munmap => {
                 let addr = regs.rdi;
                 let len = regs.rsi;
+                let range = addr..addr + len;
 
                 {
                     let formatter = make_format(BINARY);
                     let len = formatter(len);
                     info!(
-                        "{} thread of {for_tid} just did munmap addr={addr:x?} len={len}",
+                        "{} thread of {for_tid} just did munmap {range:x?} addr={addr:x?} len={len}",
                         self.tid
                     );
                 }
 
                 return Ok(Some(MemoryEvent {
                     for_tid,
-                    change: MemoryChange::Unmap {
-                        range: addr..addr + len,
-                    },
+                    change: MemoryChange::Unmap { range },
                 }));
             }
             libc::SYS_madvise => {

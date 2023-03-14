@@ -1,16 +1,16 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, ops::Range};
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
-use itertools::Itertools;
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
 
-struct GroupInfo {
+struct Group {
     start: u64,
     size: u64,
+    ranges: Vec<(Range<u64>, MemState)>,
 }
 
 #[derive(Clone)]
@@ -62,19 +62,12 @@ fn app() -> Html {
     let mut total_virt: u64 = 0;
     let mut total_res: u64 = 0;
     for (range, mem_state) in tracees.values().flat_map(|v| v.map.iter()) {
-        if *mem_state != MemState::Unmapped {
-            total_virt += range.end - range.start;
-        }
+        total_virt += range.end - range.start;
 
         if *mem_state == MemState::Resident {
             total_res += range.end - range.start;
         }
     }
-
-    // const KEY_SHR: u64 = 40;
-    // const KEY_SHR: u64 = 32;
-    // const KEY_SHR: u64 = 30;
-    const KEY_SHR: u64 = 24;
 
     let formatter = make_format(BINARY);
     html! {
@@ -95,9 +88,7 @@ fn app() -> Html {
                                         let mut virt: u64 = 0;
                                         let mut res: u64 = 0;
                                         for (range, mem_state) in tracee.map.iter() {
-                                            if *mem_state != MemState::Unmapped {
                                                 virt += range.end - range.start;
-                                            }
 
                                             if *mem_state == MemState::Resident {
                                                 res += range.end - range.start;
@@ -126,40 +117,47 @@ fn app() -> Html {
                                         return html!{ };
                                     }
 
-                                    let groups = map.iter().group_by(|(range, _)| (range.start >> KEY_SHR));
-                                    let mut group_infos = HashMap::new();
-                                    for (key, group) in groups.into_iter() {
-                                        let mut group_start: Option<u64> = None;
-                                        let mut group_end: Option<u64> = None;
-                                        for (range, _state) in group {
-                                            if group_start.is_none() {
-                                                group_start = Some(range.start);
+                                    let mut groups: Vec<Group> = vec![];
+                                    let threshold_new_group = 4 * 1024 * 1024;
+                                    for (range, state) in map.iter() {
+                                        if let Some(last_group) = groups.last() {
+                                            if (last_group.start + last_group.size) - range.start > threshold_new_group {
+                                                groups.push(Group {
+                                                    start: range.start,
+                                                    size: range.end - range.start,
+                                                    ranges: vec![
+                                                        (range.clone(), *state)
+                                                    ],
+                                                });
+                                            } else {
+                                                let last_group = groups.last_mut().unwrap();
+                                                last_group.ranges.push((range.clone(), *state));
+                                                last_group.size = range.end - last_group.start;
                                             }
-
-                                            group_end = Some(range.end);
+                                        } else {
+                                            groups.push(Group {
+                                                start: range.start,
+                                                size: range.end - range.start,
+                                                ranges: vec![
+                                                    (range.clone(), *state)
+                                                ],
+                                            });
                                         }
-                                        let size = group_end.unwrap() - group_start.unwrap();
-                                        group_infos.insert(key, GroupInfo {
-                                            start: group_start.unwrap(),
-                                            size,
-                                        });
                                     }
 
-                                    let groups = map.iter().group_by(|(range, _)| (range.start >> KEY_SHR));
                                     let mut groups_markup = vec![];
 
-                                    for (key, group) in groups.into_iter() {
+                                    for group in groups {
                                         let mut group_markup = vec![];
                                         let mut group_start = None;
-                                        let group_info = &group_infos[&key];
 
                                         let mut max_mb: u64 = 16 * 1024;
-                                        while max_mb < group_info.size {
+                                        while max_mb < group.size {
                                             max_mb *= 2;
                                         }
                                         let max_mb_f = max_mb as f64;
 
-                                        for (range, mem_state) in group {
+                                        for (range, mem_state) in group.ranges {
                                             if group_start.is_none() {
                                                 group_start = Some(range.start);
                                             }
@@ -187,7 +185,7 @@ fn app() -> Html {
                                                 <div class="group-outer">
                                                     <div class="group-header">
                                                         <span>
-                                                            { format!("{:x}", group_infos[&key].start) }
+                                                            { format!("{:x}", group.start) }
                                                         </span>
                                                         <span class="scale">
                                                             { format!("{} scale", formatter(max_mb)) }

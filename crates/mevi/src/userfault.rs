@@ -76,15 +76,13 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 addr, thread_id, ..
             } => {
                 unsafe {
-                    let mut num_tries = 0;
                     loop {
-                        num_tries += 1;
-                        tracing::debug!(
+                        tracing::info!(
                             "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}...",
                         );
                         let res = uffd.zeropage(addr, page_size as _, true);
-                        tracing::debug!(
-                            "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}... done!",
+                        tracing::info!(
+                            "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}... done! (res = {res:?})",
                         );
                         // eprintln!("trying to zeropage {addr:p}, size {page_size:x?}");
                         match res {
@@ -97,16 +95,16 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                                     match errno as i32 {
                                         libc::EAGAIN => {
                                             // this is actually fine, just try it again
-                                            if num_tries > 5 {
-                                                panic!("[{thread_id}] thread of {tid} tried to zeropage {addr:p} {num_tries} times, giving up");
-                                            }
+                                            // if num_tries > 5 {
+                                            //     panic!("[{thread_id}] thread of {tid} tried to zeropage {addr:p} {num_tries} times, giving up");
+                                            // }
 
-                                            debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, continuing");
-                                            continue;
+                                            // debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, continuing");
+                                            // continue;
 
                                             // maybe this isn't fine?
-                                            // debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
-                                            // break;
+                                            debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
+                                            break;
                                         }
                                         libc::EBADF => {
                                             warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
@@ -136,7 +134,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let from = from as usize;
                 let to = to as usize;
 
-                info!(
+                debug!(
                     "{} got uffd remap event {:x?}.. => {:x?}, len = {}",
                     tid,
                     from,
@@ -153,7 +151,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let start = start as usize;
                 let end = end as usize;
 
-                info!(
+                debug!(
                     "{} got uffd remove event {:x?}, len = {}",
                     tid,
                     start..end,
@@ -166,7 +164,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let start = start as usize;
                 let end = end as usize;
 
-                info!(
+                debug!(
                     "{} got uffd unmap event {:x?}, len = {}",
                     tid,
                     start..end,

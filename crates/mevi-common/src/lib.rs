@@ -125,7 +125,7 @@ impl TraceePayload {
                 map.insert(range.clone(), MemState::NotResident);
             }
             TraceePayload::Unmap { range } => {
-                map.insert(range.clone(), MemState::Unmapped);
+                map.remove(range.clone());
             }
             TraceePayload::Remap {
                 old_range,
@@ -149,12 +149,13 @@ impl TraceePayload {
 
                     // if we grew, mark the new pages as not resident
                     if new_range.end > old_range.end {
+                        let new_pages = old_range.end..new_range.end;
                         info!(
-                            "remap: range grew by {}, now is {:x?}",
+                            "remap: range grew by {}, now is {:x?}. marking {new_pages:x?} as not resident",
                             formatter((new_range.end - old_range.end) as _),
                             new_range
                         );
-                        map.insert(old_range.end..new_range.end, MemState::NotResident);
+                        map.insert(new_pages, MemState::NotResident);
                     }
                 } else {
                     // the new range is elsewhere - we need to copy the state
@@ -164,29 +165,39 @@ impl TraceePayload {
 
                     // now copy over old state
                     for (old_subrange, old_state) in map.overlapping(old_range) {
-                        let mut subrange = old_subrange.clone();
+                        let mut subrange_old = old_subrange.clone();
                         // clamp to old range
-                        if subrange.start < old_range.start {
-                            subrange.start = old_range.start;
+                        if subrange_old.start < old_range.start {
+                            subrange_old.start = old_range.start;
                         }
-                        if subrange.end > old_range.end {
-                            subrange.end = old_range.end;
+                        if subrange_old.end > old_range.end {
+                            subrange_old.end = old_range.end;
                         }
+
+                        let mut subrange_new = subrange_old.clone();
 
                         // remap to new range
                         if new_range.start < old_range.start {
                             // new range is to the left of old range
                             let diff = old_range.start.checked_sub(new_range.start).unwrap();
-                            subrange.start -= diff;
-                            subrange.end -= diff;
+                            subrange_new.start -= diff;
+                            subrange_new.end -= diff;
                         } else {
                             // new range is to the right of old range (or didn't move)
                             let diff = new_range.start.checked_sub(old_range.start).unwrap();
-                            subrange.start += diff;
-                            subrange.end += diff;
+                            subrange_new.start += diff;
+                            subrange_new.end += diff;
                         }
 
-                        merge_state.insert(subrange, *old_state);
+                        info!(
+                            "remap: {:x?} ({}) => {:x?} ({}) = {:?}",
+                            subrange_old,
+                            formatter(subrange_old.end - subrange_old.start),
+                            subrange_new,
+                            formatter(subrange_new.end - subrange_new.start),
+                            old_state
+                        );
+                        merge_state.insert(subrange_new, *old_state);
                     }
 
                     // now remove old range
@@ -194,12 +205,6 @@ impl TraceePayload {
 
                     // and merge in the new state
                     for (subrange, state) in merge_state.into_iter() {
-                        info!(
-                            "remap: {:x?} ({}) = {:?}",
-                            subrange,
-                            formatter(subrange.end - subrange.start),
-                            state
-                        );
                         map.insert(subrange, state);
                     }
                 }
