@@ -163,6 +163,26 @@ fn app() -> Html {
                             <div class="process">
                                 <div class="process-info">
                                     <span class="pid">{tracee.tid.0}</span>
+                                    {{
+                                        // collect virt/rss stats for process
+                                        let mut virt: u64 = 0;
+                                        let mut res: u64 = 0;
+                                        for (range, mem_state) in tracee.map.iter() {
+                                            if *mem_state != MemState::Unmapped {
+                                                virt += range.end - range.start;
+                                            }
+
+                                            if *mem_state == MemState::Resident {
+                                                res += range.end - range.start;
+                                            }
+                                        }
+                                        html! {
+                                            <>
+                                                <span class="mem-stats virt"><span>{format!("{}", formatter(virt))}</span></span>
+                                                <span class="mem-stats rss"><span>{format!("{}", formatter(res))}</span></span>
+                                            </>
+                                        }
+                                    }}
                                     {
                                         tracee.cmdline.iter().map(|arg| {
                                             html! {

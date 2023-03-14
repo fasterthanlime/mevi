@@ -30,7 +30,7 @@
 
         .mem-stats-container {
             position: sticky;
-            top: 1em;
+            top: 0em;
             padding: 1em 0;
 
             display: flex;
@@ -39,6 +39,13 @@
 
             background: var(--body-bg);
             z-index: 40;
+
+            font-size: 150%;
+        }
+
+        .mem-stats-container .mem-stats {
+            min-width: 12em;
+            padding: .3em .6em;
         }
 
         .mem-stats, i {
@@ -46,13 +53,14 @@
         }
 
         .mem-stats {
-            min-width: 12em;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+
             text-align: center;
-            font-size: 150%;
-            padding: .3em .6em;
             border-radius: 4px;
             border: 1px solid rgba(255, 255, 255, 0.3);
-            display: inline-block;
+            padding: .2em;
         }
 
         .process {
@@ -69,7 +77,7 @@
         }
 
         .pid, .arg {
-            padding: .5em;
+            padding: .2em;
             border-radius: 4px;
             border: 1px solid rgb(64, 64, 64);
         }
