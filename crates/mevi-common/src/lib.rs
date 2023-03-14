@@ -1,5 +1,6 @@
 use std::{fmt, ops::Range, sync::mpsc};
 
+use humansize::{make_format, BINARY};
 use rangemap::RangeMap;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -131,12 +132,29 @@ impl TraceePayload {
                 new_range,
                 _guard,
             } => {
+                let formatter = make_format(BINARY);
+
                 if old_range.start == new_range.start {
                     // we either grew in place or shrunk
 
                     // if we shrunk, unmap the extra pages
                     if new_range.end < old_range.end {
+                        info!(
+                            "remap: range shrunk by {}, now is {:x?}",
+                            formatter((old_range.end - new_range.end) as _),
+                            new_range,
+                        );
                         map.remove(new_range.end..old_range.end);
+                    }
+
+                    // if we grew, mark the new pages as not resident
+                    if new_range.end > old_range.end {
+                        info!(
+                            "remap: range grew by {}, now is {:x?}",
+                            formatter((new_range.end - old_range.end) as _),
+                            new_range
+                        );
+                        map.insert(old_range.end..new_range.end, MemState::NotResident);
                     }
                 } else {
                     // the new range is elsewhere - we need to copy the state
@@ -176,7 +194,12 @@ impl TraceePayload {
 
                     // and merge in the new state
                     for (subrange, state) in merge_state.into_iter() {
-                        info!("remap: {:x?} = {:?}", subrange, state);
+                        info!(
+                            "remap: {:x?} ({}) = {:?}",
+                            subrange,
+                            formatter(subrange.end - subrange.start),
+                            state
+                        );
                         map.insert(subrange, state);
                     }
                 }

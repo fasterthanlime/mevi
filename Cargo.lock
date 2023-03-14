@@ -1040,6 +1040,7 @@ dependencies = [
 name = "mevi-common"
 version = "0.1.0"
 dependencies = [
+ "humansize",
  "nix",
  "rangemap",
  "serde",
