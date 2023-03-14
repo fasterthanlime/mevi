@@ -18,6 +18,7 @@ use axum::{
     response::IntoResponse,
 };
 use color_eyre::Result;
+use humansize::{make_format, BINARY};
 use nix::unistd::Pid;
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
@@ -366,7 +367,12 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 old_range,
                 new_range,
             } => {
-                warn!("Remap: {old_range:?} => {new_range:?}");
+                let formatter = make_format(BINARY);
+                warn!(
+                    "remap: ({}) {old_range:x?} => ({}) {new_range:x?}",
+                    formatter(old_range.end - old_range.start),
+                    formatter(new_range.end - new_range.start),
+                );
 
                 // FIXME: that's not right - we should retain the memory state
                 tracee.map.remove(old_range);

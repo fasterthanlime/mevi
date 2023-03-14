@@ -127,7 +127,12 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let start = start as usize;
                 let end = end as usize;
 
-                info!("{} sending {} unmap", tid, make_format(BINARY)(end - start));
+                info!(
+                    "{} sending {} unmap {:x?}",
+                    tid,
+                    make_format(BINARY)(end - start),
+                    start..end
+                );
                 send_ev(TraceePayload::Unmap { range: start..end });
             }
             other => {
