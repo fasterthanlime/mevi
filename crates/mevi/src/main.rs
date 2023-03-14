@@ -43,6 +43,10 @@ type MemMap = RangeMap<usize, MemState>;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
+lazy_static::lazy_static! {
+    static ref BATCH_SIZE: usize = std::env::var("MEVI_BATCH_SIZE").map(|s| s.parse().unwrap()).unwrap_or(1024);
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(transparent)]
 struct TraceeId(u64);
@@ -196,13 +200,8 @@ impl TraceeState {
         self.send_ev(TraceePayload::Batch { batch });
     }
 
-    const BATCH_SIZE: usize = 1024;
-    // const BATCH_SIZE: usize = 512;
-    // const BATCH_SIZE: usize = 128;
-    // const BATCH_SIZE: usize = 16;
-
     fn accumulate(&mut self, range: Range<usize>, state: MemState) {
-        if self.batch_size > Self::BATCH_SIZE {
+        if self.batch_size > *BATCH_SIZE {
             self.flush();
         }
 

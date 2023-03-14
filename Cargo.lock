@@ -1020,6 +1020,7 @@ dependencies = [
  "bincode",
  "color-eyre",
  "humansize",
+ "lazy_static",
  "libc",
  "nix",
  "owo-colors",
