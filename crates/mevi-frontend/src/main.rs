@@ -171,7 +171,7 @@ fn app() -> Html {
 
                                             let style = format!("width: {}%; left: {}%;", size as f64 / max_mb_f * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb_f * 100.0);
                                             group_markup.push(html! {
-                                                <i class={format!("{:?}", mem_state)} title={format!("{} at {:x}", formatter(size), range.start)} style={style}>{
+                                                <i class={format!("{:?}", mem_state)} title={format!("{} at {:x?}", formatter(size), range)} style={style}>{
                                                     // if size > 4 * 1024 * 1024 {
                                                     if size > 128 * 1024 {
                                                         Cow::from(formatter(size).to_string())

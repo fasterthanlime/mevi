@@ -567,8 +567,10 @@ impl Tracee {
         let raw_uffd = ret;
         debug!("making userfaultfd sycall.. done! got fd {raw_uffd}");
 
-        let req_features =
-            FeatureFlags::EVENT_REMAP | FeatureFlags::EVENT_REMOVE | FeatureFlags::EVENT_UNMAP;
+        let req_features = FeatureFlags::EVENT_REMAP
+            | FeatureFlags::EVENT_REMOVE
+            | FeatureFlags::EVENT_UNMAP
+            | FeatureFlags::THREAD_ID;
         let mut api = raw::uffdio_api {
             api: raw::UFFD_API,
             features: req_features.bits(),

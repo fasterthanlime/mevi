@@ -4,7 +4,7 @@ members = [
 ]
 
 [workspace.dependencies]
-userfaultfd = { git = "https://github.com/fasterthanlime/userfaultfd-rs", branch = "expose-raw" }
+userfaultfd = { git = "https://github.com/fasterthanlime/userfaultfd-rs", branch = "expose-raw", features = ["linux4_14", "linux5_7"] }
 
 [profile.release]
 debug = 1
