@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fmt,
     ops::Range,
     os::{
         fd::{FromRawFd, RawFd},
@@ -19,11 +18,9 @@ use axum::{
 };
 use color_eyre::Result;
 use humansize::{make_format, BINARY};
-use nix::unistd::Pid;
+use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
-use rangemap::RangeMap;
-use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
@@ -31,107 +28,10 @@ use userfaultfd::Uffd;
 mod tracer;
 mod userfault;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-enum MemState {
-    Resident,
-    NotResident,
-    Unmapped,
-    Untracked,
-}
-
-type MemMap = RangeMap<usize, MemState>;
-
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
 lazy_static::lazy_static! {
     static ref BATCH_SIZE: usize = std::env::var("MEVI_BATCH_SIZE").map(|s| s.parse().unwrap()).unwrap_or(1024);
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
-#[serde(transparent)]
-struct TraceeId(u64);
-
-impl fmt::Display for TraceeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}]", self.0)
-    }
-}
-
-impl From<Pid> for TraceeId {
-    fn from(pid: Pid) -> Self {
-        Self(pid.as_raw() as _)
-    }
-}
-
-impl From<TraceeId> for Pid {
-    fn from(id: TraceeId) -> Self {
-        Self::from_raw(id.0 as _)
-    }
-}
-
-#[derive(Debug, Serialize)]
-enum MeviEvent {
-    Snapshot(Vec<TraceeSnapshot>),
-    TraceeEvent(TraceeId, TraceePayload),
-}
-
-#[derive(Debug, Serialize)]
-struct MapGuard {
-    #[serde(skip)]
-    _inner: Option<mpsc::Sender<()>>,
-}
-
-impl Clone for MapGuard {
-    fn clone(&self) -> Self {
-        Self { _inner: None }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct TraceeSnapshot {
-    tid: TraceeId,
-    cmdline: Vec<String>,
-    map: MemMap,
-}
-
-#[derive(Debug, Clone, Serialize)]
-enum ConnectSource {
-    Uds,
-}
-
-#[derive(Debug, Clone, Serialize)]
-enum TraceePayload {
-    Map {
-        range: Range<usize>,
-        state: MemState,
-        _guard: MapGuard,
-    },
-    Connected {
-        source: ConnectSource,
-        uffd: u64,
-    },
-    Execve,
-    PageIn {
-        range: Range<usize>,
-    },
-    PageOut {
-        range: Range<usize>,
-    },
-    Unmap {
-        range: Range<usize>,
-    },
-    Remap {
-        old_range: Range<usize>,
-        new_range: Range<usize>,
-        _guard: MapGuard,
-    },
-    Batch {
-        batch: MemMap,
-    },
-    Start {
-        cmdline: Vec<String>,
-    },
-    Exit,
 }
 
 #[tokio::main]
@@ -201,7 +101,7 @@ impl TraceeState {
         self.send_ev(TraceePayload::Batch { batch });
     }
 
-    fn accumulate(&mut self, range: Range<usize>, state: MemState) {
+    fn accumulate(&mut self, range: Range<u64>, state: MemState) {
         if self.batch_size > *BATCH_SIZE {
             self.flush();
         }
@@ -210,11 +110,11 @@ impl TraceeState {
         self.batch_size += 1;
     }
 
-    fn register(&mut self, range: &Range<usize>, state: MemState) {
+    fn register(&mut self, range: &Range<u64>, state: MemState) {
         let mut could_register = false;
 
         if let Some(uffd) = &self.uffd {
-            if let Err(e) = uffd.register(range.start as _, range.end - range.start) {
+            if let Err(e) = uffd.register(range.start as _, (range.end - range.start) as _) {
                 warn!(
                     "{} failed to register range {range:x?} {state:?}: {e}",
                     self.tid

@@ -8,12 +8,11 @@ use std::{
 };
 
 use humansize::{make_format, BINARY};
+use mevi_common::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
 use tracing::{debug, info, warn};
 use userfaultfd::Uffd;
-
-use crate::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
 
 pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
     loop {
@@ -52,7 +51,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
 }
 
 fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
-    let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as usize;
+    let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as u64;
 
     let send_ev = |payload: TraceePayload| {
         tx.send(MeviEvent::TraceeEvent(tid, payload)).unwrap();
@@ -76,7 +75,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             userfaultfd::Event::Pagefault { addr, .. } => {
                 unsafe {
                     loop {
-                        let res = uffd.zeropage(addr, page_size, true);
+                        let res = uffd.zeropage(addr, page_size as _, true);
                         // eprintln!("trying to zeropage {addr:p}, size {page_size:x?}");
                         match res {
                             Ok(_) => {
@@ -115,7 +114,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                         }
                     }
                 }
-                let addr = addr as usize;
+                let addr = addr as u64;
                 send_ev(TraceePayload::PageIn {
                     range: addr..addr + page_size,
                 });

@@ -6,6 +6,7 @@ use std::{
 use color_eyre::Result;
 use humansize::{make_format, BINARY};
 use libc::{sockaddr_un, user_regs_struct};
+use mevi_common::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
 use nix::{
     errno::Errno,
     sys::{
@@ -19,8 +20,6 @@ use nix::{
 use owo_colors::OwoColorize;
 use tracing::{debug, info, trace, warn};
 use userfaultfd::{raw, FeatureFlags, IoctlFlags};
-
-use crate::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
 
 pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>) {
     Tracer::new(tx).unwrap().run().unwrap();
@@ -38,18 +37,18 @@ struct MemoryEvent {
 
 enum MemoryChange {
     Map {
-        range: Range<usize>,
+        range: Range<u64>,
         state: MemState,
     },
     Remap {
-        old_range: Range<usize>,
-        new_range: Range<usize>,
+        old_range: Range<u64>,
+        new_range: Range<u64>,
     },
     Unmap {
-        range: Range<usize>,
+        range: Range<u64>,
     },
     PageOut {
-        range: Range<usize>,
+        range: Range<u64>,
     },
 }
 
@@ -267,7 +266,7 @@ enum TraceeKind {
     Unknown,
 
     // we got an uffd for it
-    Process { heap_range: Range<usize> },
+    Process { heap_range: Range<u64> },
 
     // it's a thread of something we have an uffd for
     ThreadOf { pid: TraceeId },
@@ -277,7 +276,7 @@ impl Tracee {
     fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<MemoryEvent>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
-        let ret = regs.rax as usize;
+        let ret = regs.rax;
 
         if matches!(self.kind, TraceeKind::Unknown) {
             match regs.orig_rax as _ {
@@ -316,7 +315,7 @@ impl Tracee {
             }
             libc::SYS_mmap => {
                 let addr_in = regs.rdi;
-                let len = regs.rsi as usize;
+                let len = regs.rsi;
                 let prot = regs.rdx;
                 let flags = regs.r10;
                 let fd = regs.r8 as i32;
@@ -344,9 +343,9 @@ impl Tracee {
                 }
             }
             libc::SYS_mremap => {
-                let addr = regs.rdi as usize;
-                let old_len = regs.rsi as usize;
-                let new_len = regs.rdx as usize;
+                let addr = regs.rdi;
+                let old_len = regs.rsi;
+                let new_len = regs.rdx;
                 let flags = regs.r10;
                 let new_addr = ret;
 
@@ -366,8 +365,8 @@ impl Tracee {
                 }));
             }
             libc::SYS_munmap => {
-                let addr = regs.rdi as usize;
-                let len = regs.rsi as usize;
+                let addr = regs.rdi;
+                let len = regs.rsi;
 
                 {
                     let formatter = make_format(BINARY);
@@ -386,8 +385,8 @@ impl Tracee {
                 }));
             }
             libc::SYS_madvise => {
-                let addr = regs.rdi as usize;
-                let len = regs.rsi as usize;
+                let addr = regs.rdi;
+                let len = regs.rsi;
                 let advice = regs.rdx as i32;
 
                 match advice {
@@ -733,7 +732,7 @@ impl Tracee {
         debug!("brk(0) returned {ret}");
 
         self.kind = TraceeKind::Process {
-            heap_range: ret as usize..ret as usize,
+            heap_range: ret..ret,
         };
         ptrace::setregs(pid, saved_regs)?;
 
