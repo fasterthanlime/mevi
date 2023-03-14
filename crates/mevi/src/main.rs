@@ -231,6 +231,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             }
         };
 
+        payload.apply_to_memmap(&mut tracee.map);
         match payload {
             TraceePayload::Map { range, state, .. } => {
                 tracee.register(&range, state);
@@ -252,16 +253,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             TraceePayload::Execve => {
                 debug!("{} will execve, clearing uffd", tracee.tid);
                 tracee.uffd = None;
-                tracee.map.clear();
-            }
-            TraceePayload::PageIn { range } => {
-                tracee.map.insert(range, MemState::Resident);
-            }
-            TraceePayload::PageOut { range } => {
-                tracee.map.insert(range, MemState::NotResident);
-            }
-            TraceePayload::Unmap { range } => {
-                tracee.map.remove(range);
+                // map is cleared by apply_to_memmap
             }
             TraceePayload::Remap {
                 old_range,
@@ -274,10 +266,6 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                     formatter(old_range.end - old_range.start),
                     formatter(new_range.end - new_range.start),
                 );
-
-                // FIXME: that's not right - we should retain the memory state
-                tracee.map.remove(old_range);
-                tracee.map.insert(new_range, MemState::NotResident);
             }
             TraceePayload::Batch { .. } => {
                 unreachable!()
@@ -287,6 +275,9 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
             }
             TraceePayload::Exit => {
                 tracees.remove(&tid);
+            }
+            _ => {
+                // ignore
             }
         }
     }

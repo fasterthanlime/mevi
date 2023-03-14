@@ -238,45 +238,16 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
         cmdline: Default::default(),
     });
 
+    payload.apply_to_memmap(&mut tracee.map);
     match payload {
-        TraceePayload::Map { range, state, .. } => {
-            tracee.map.insert(range, state);
-        }
-        TraceePayload::Connected { .. } => {
-            // do nothing
-        }
-        TraceePayload::Execve => {
-            // all the mappings are invalidated on exec
-            tracee.map.clear();
-        }
-        TraceePayload::PageIn { range } => {
-            tracee.map.insert(range, MemState::Resident);
-        }
-        TraceePayload::PageOut { range } => {
-            tracee.map.insert(range, MemState::NotResident);
-        }
-        TraceePayload::Unmap { range } => {
-            tracee.map.insert(range, MemState::Unmapped);
-        }
-        TraceePayload::Remap {
-            old_range,
-            new_range,
-            _guard,
-        } => {
-            // FIXME: that's not right - we should retain the memory state
-            tracee.map.insert(old_range, MemState::Unmapped);
-            tracee.map.insert(new_range, MemState::NotResident);
-        }
-        TraceePayload::Batch { batch } => {
-            for (range, mem_state) in batch.into_iter() {
-                tracee.map.insert(range, mem_state);
-            }
-        }
         TraceePayload::Start { cmdline } => {
             tracee.cmdline = cmdline;
         }
         TraceePayload::Exit { .. } => {
             tracees.remove(&tid);
+        }
+        _ => {
+            // ignore
         }
     }
 }

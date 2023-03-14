@@ -101,3 +101,49 @@ impl Clone for MapGuard {
         Self { _inner: None }
     }
 }
+
+impl TraceePayload {
+    pub fn apply_to_memmap(&self, map: &mut MemMap) {
+        match self {
+            TraceePayload::Map { range, state, .. } => {
+                map.insert(range.clone(), *state);
+            }
+            TraceePayload::Connected { .. } => {
+                // do nothing
+            }
+            TraceePayload::Execve => {
+                // all the mappings are invalidated on exec
+                map.clear();
+            }
+            TraceePayload::PageIn { range } => {
+                map.insert(range.clone(), MemState::Resident);
+            }
+            TraceePayload::PageOut { range } => {
+                map.insert(range.clone(), MemState::NotResident);
+            }
+            TraceePayload::Unmap { range } => {
+                map.insert(range.clone(), MemState::Unmapped);
+            }
+            TraceePayload::Remap {
+                old_range,
+                new_range,
+                _guard,
+            } => {
+                // FIXME: that's not right - we should retain the memory state
+                map.insert(old_range.clone(), MemState::Unmapped);
+                map.insert(new_range.clone(), MemState::NotResident);
+            }
+            TraceePayload::Batch { batch } => {
+                for (range, mem_state) in batch.iter() {
+                    map.insert(range.clone(), *mem_state);
+                }
+            }
+            TraceePayload::Start { .. } => {
+                // do nothing
+            }
+            TraceePayload::Exit { .. } => {
+                // do nothing
+            }
+        }
+    }
+}
