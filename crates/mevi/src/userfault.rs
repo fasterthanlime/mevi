@@ -125,7 +125,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 let to = to as usize;
 
                 info!(
-                    "{} got uffd remap event,  {:x?}.. => {:x?}, len = {}",
+                    "{} got uffd remap event {:x?}.. => {:x?}, len = {}",
                     tid,
                     from,
                     to,
