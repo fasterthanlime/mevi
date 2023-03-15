@@ -77,11 +77,11 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
             } => {
                 unsafe {
                     loop {
-                        tracing::info!(
+                        tracing::debug!(
                             "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}...",
                         );
                         let res = uffd.zeropage(addr, page_size as _, true);
-                        tracing::info!(
+                        tracing::debug!(
                             "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}... done! (res = {res:?})",
                         );
                         // eprintln!("trying to zeropage {addr:p}, size {page_size:x?}");

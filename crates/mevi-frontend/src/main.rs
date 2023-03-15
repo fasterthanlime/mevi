@@ -121,7 +121,7 @@ fn app() -> Html {
                                     let threshold_new_group = 4 * 1024 * 1024;
                                     for (range, state) in map.iter() {
                                         if let Some(last_group) = groups.last() {
-                                            if (last_group.start + last_group.size) - range.start > threshold_new_group {
+                                            if (last_group.start + last_group.size) - range.start > threshold_new_group || last_group.size >= 30 * 1024 * 1024 {
                                                 groups.push(Group {
                                                     start: range.start,
                                                     size: range.end - range.start,
@@ -147,9 +147,9 @@ fn app() -> Html {
 
                                     let mut groups_markup = vec![];
 
+                                    let mut last_group_end: Option<u64> = None;
                                     for group in groups {
                                         let mut group_markup = vec![];
-                                        let mut group_start = None;
 
                                         let mut max_mb: u64 = 16 * 1024;
                                         while max_mb < group.size {
@@ -158,16 +158,12 @@ fn app() -> Html {
                                         let max_mb_f = max_mb as f64;
 
                                         for (range, mem_state) in group.ranges {
-                                            if group_start.is_none() {
-                                                group_start = Some(range.start);
-                                            }
-
                                             let size = range.end - range.start;
                                             if size < 4 * 4096 {
                                                 continue;
                                             }
 
-                                            let style = format!("width: {}%; left: {}%;", size as f64 / max_mb_f * 100.0, (range.start - group_start.unwrap()) as f64 / max_mb_f * 100.0);
+                                            let style = format!("width: {}%; left: {}%;", size as f64 / max_mb_f * 100.0, (range.start - group.start) as f64 / max_mb_f * 100.0);
                                             group_markup.push(html! {
                                                 <i class={format!("{:?}", mem_state)} title={format!("{} at {:x?}", formatter(size), range)} style={style}>{
                                                     // if size > 4 * 1024 * 1024 {
@@ -182,21 +178,40 @@ fn app() -> Html {
 
                                         if !group_markup.is_empty() {
                                             groups_markup.push(html! {
-                                                <div class="group-outer">
-                                                    <div class="group-header">
-                                                        <span>
-                                                            { format!("{:x}", group.start) }
-                                                        </span>
-                                                        <span class="scale">
-                                                            { format!("{} scale", formatter(max_mb)) }
-                                                        </span>
+                                                <>
+                                                    {{
+                                                        let mut gap = 0;
+                                                        if let Some(last_group_end) = last_group_end {
+                                                            gap = group.start - last_group_end;
+                                                        }
+                                                        if gap > 0 {
+                                                            html! {
+                                                                <div class="group-gap">
+                                                                    { format!("{} gap", formatter(group.start - last_group_end.unwrap_or_default())) }
+                                                                </div>
+                                                            }
+                                                        } else {
+                                                            html! {}
+                                                        }
+                                                    }}
+                                                    <div class="group-outer">
+                                                        <div class="group-header">
+                                                            <span>
+                                                                { format!("{:x}", group.start) }
+                                                            </span>
+                                                            <span class="scale">
+                                                                { format!("{} scale", formatter(max_mb)) }
+                                                            </span>
+                                                        </div>
+                                                        <div class="group">
+                                                            { group_markup }
+                                                        </div>
                                                     </div>
-                                                    <div class="group">
-                                                        { group_markup }
-                                                    </div>
-                                                </div>
+                                                </>
                                             });
                                         }
+
+                                        last_group_end = Some(group.start + group.size);
                                     }
 
                                     groups_markup
