@@ -120,9 +120,9 @@ impl Tracer {
                         Signal::SIGSTOP => {
                             // probably a new thread after clone?
                             debug!("{tid} is that a new thread? (just got SIGSTOP)");
-                            // nix::sys::signal::kill(pid, Signal::SIGCONT)?;
-                            // ptrace::syscall(pid, None)?;
-                            ptrace::syscall(pid, Signal::SIGCONT)?;
+                            nix::sys::signal::kill(pid, Signal::SIGCONT)?;
+                            ptrace::syscall(pid, None)?;
+                            // ptrace::syscall(pid, Signal::SIGCONT)?;
                             // ptrace::syscall(pid, Signal::SIGSTOP)?;
                         }
                         _ => {
@@ -482,9 +482,13 @@ impl Tracee {
                 WaitStatus::PtraceSyscall(_) => {
                     // good.
                 }
+                WaitStatus::Stopped(pid, signal) => {
+                    // forward signal, try to step agai
+                    ptrace::syscall(pid, signal)?;
+                }
                 other => {
                     panic!(
-                        "{} in make_uffd, unexpected wait status: {:?}",
+                        "{} in connect, unexpected wait status: {:?}",
                         self.tid, other
                     );
                 }

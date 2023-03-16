@@ -3,6 +3,8 @@ use std::{collections::HashMap, ops::Range};
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
+use instant::{Duration, Instant};
+use itertools::Itertools;
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload};
 use wasm_bindgen_futures::spawn_local;
 use yew::prelude::*;
@@ -18,6 +20,21 @@ struct TraceeState {
     tid: TraceeId,
     map: MemMap,
     cmdline: Vec<String>,
+}
+
+impl TraceeState {
+    fn total_rss(&self) -> u64 {
+        self.map
+            .iter()
+            .map(|(range, state)| {
+                if state == &MemState::Resident {
+                    range.end - range.start
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
 }
 
 async fn connect_to_ws() -> WebSocket {
@@ -69,6 +86,10 @@ fn app() -> Html {
                 let mut tracees_acc = HashMap::new();
 
                 spawn_local(async move {
+                    let mut last_flush = Instant::now();
+                    let mut batch_size = 0;
+                    let flush_every = Duration::from_millis(16);
+
                     let (mut _write, mut read) = connect_to_ws().await.split();
                     live.set(true);
 
@@ -90,14 +111,25 @@ fn app() -> Html {
                         live.set(true);
                         match msg {
                             Message::Text(t) => {
-                                gloo_console::log!(format!("text message: {t}"))
+                                gloo_console::log!(format!("text message: {t}"));
+                                if t == "flush" {
+                                    tracees.set(tracees_acc.clone());
+                                    last_flush = Instant::now();
+                                    batch_size = 0;
+                                }
                             }
                             Message::Bytes(b) => {
                                 let ev: MeviEvent = bincode::deserialize(&b).unwrap();
                                 // gloo_console::log!(format!("{:?}", ev));
 
                                 apply_ev(&mut tracees_acc, ev);
-                                tracees.set(tracees_acc.clone());
+                                batch_size += 1;
+                                if last_flush.elapsed() > flush_every {
+                                    gloo_console::log!(format!("flushing {} events", batch_size));
+                                    tracees.set(tracees_acc.clone());
+                                    last_flush = Instant::now();
+                                    batch_size = 0;
+                                }
                             }
                         }
                     }
@@ -128,7 +160,7 @@ fn app() -> Html {
                 <span class={ if *live { "live-indicator live" } else { "live-indicator offline" } }>{ if *live { "LIVE" } else { "OFFLINE" } }</span>
             </div>
             {{
-                tracees.values().map(|tracee| {
+                tracees.values().sorted_by_key(|p| std::cmp::Reverse(p.total_rss())).map(|tracee| {
                     html! {
                         <>
                             <div class="process">
@@ -169,10 +201,11 @@ fn app() -> Html {
                                     }
 
                                     let mut groups: Vec<Group> = vec![];
-                                    let threshold_new_group = 4 * 1024 * 1024;
+                                    // let threshold_new_group = 4 * 1024 * 1024;
+                                    let threshold_new_group = 128 * 1024 * 1024;
                                     for (range, state) in map.iter() {
                                         if let Some(last_group) = groups.last() {
-                                            if (last_group.start + last_group.size) - range.start > threshold_new_group || last_group.size >= 30 * 1024 * 1024 {
+                                            if range.start - (last_group.start + last_group.size) > threshold_new_group || last_group.size >= 30 * 1024 * 1024 {
                                                 groups.push(Group {
                                                     start: range.start,
                                                     size: range.end - range.start,
@@ -233,9 +266,7 @@ fn app() -> Html {
                                                 }
                                             } else {
                                                 html! {
-                                                    <i class={state_class(mem_state)} style={style}>{
-                                                        formatter(size).to_string()
-                                                    }</i>
+                                                    <i class={state_class(mem_state)} style={style}></i>
                                                 }
                                             };
                                             group_markup.push(h)

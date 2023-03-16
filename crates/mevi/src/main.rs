@@ -299,7 +299,15 @@ async fn stream(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> imp
 
 async fn handle_ws(mut payload_rx: broadcast::Receiver<Vec<u8>>, mut ws: WebSocket) {
     loop {
-        let payload = payload_rx.recv().await.unwrap();
+        let payload = match tokio::time::timeout(Duration::from_millis(16), payload_rx.recv()).await
+        {
+            Ok(payload) => payload,
+            Err(_elapsed) => {
+                ws.send(Message::Text("flush".to_string())).await.unwrap();
+                payload_rx.recv().await
+            }
+        };
+        let payload = payload.unwrap();
         ws.send(Message::Binary(payload)).await.unwrap();
     }
 }

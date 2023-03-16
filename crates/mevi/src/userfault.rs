@@ -103,7 +103,8 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                                             // continue;
 
                                             // maybe this isn't fine?
-                                            debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
+                                            warn!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
+                                            uffd.wake(addr, page_size as _).unwrap();
                                             break;
                                         }
                                         libc::EBADF => {
