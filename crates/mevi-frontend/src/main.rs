@@ -122,9 +122,10 @@ fn app() -> Html {
     html! {
         <>
             <div class="mem-stats-container">
-                <span class="mem-stats virt"><span class="name">{"Virtual"}</span>{format!("{}", formatter(total_virt))}</span>
-                <span class="mem-stats rss"><span class="name">{"Resident"}</span>{format!("{}", formatter(total_res))}</span>
-                <span class="live">{ if *live { "LIVE" } else { "OFFLINE" } }</span>
+                <span class="brand"><span>{"me"}</span><span class="brand-rest">{"vi"}</span></span>
+                <span class="mem-stats rss"><span class="name">{"RSS"}</span>{format!("{}", formatter(total_res))}</span>
+                <span class="mem-stats virt"><span class="name">{"VSZ"}</span>{format!("{}", formatter(total_virt))}</span>
+                <span class={ if *live { "live-indicator live" } else { "live-indicator offline" } }>{ if *live { "LIVE" } else { "OFFLINE" } }</span>
             </div>
             {{
                 tracees.values().map(|tracee| {
@@ -146,8 +147,8 @@ fn app() -> Html {
                                         }
                                         html! {
                                             <>
-                                                <span class="mem-stats virt"><span>{format!("{}", formatter(virt))}</span></span>
                                                 <span class="mem-stats rss"><span>{format!("{}", formatter(res))}</span></span>
+                                                <span class="mem-stats virt"><span>{format!("{}", formatter(virt))}</span></span>
                                             </>
                                         }
                                     }}
@@ -209,15 +210,16 @@ fn app() -> Html {
 
                                         for (range, mem_state) in group.ranges {
                                             let size = range.end - range.start;
-                                            if size < 4 * 4096 {
-                                                continue;
-                                            }
+                                            // if size < 4 * 4096 {
+                                            //     continue;
+                                            // }
 
                                             let style = format!("width: {}%; left: {}%;", size as f64 / max_mb_f * 100.0, (range.start - group.start) as f64 / max_mb_f * 100.0);
                                             group_markup.push(html! {
                                                 <i class={format!("{:?}", mem_state)} title={format!("{} at {:x?}", formatter(size), range)} style={style}>{
                                                     // if size > 4 * 1024 * 1024 {
-                                                    if size > 128 * 1024 {
+                                                    // if size > 128 * 1024 {
+                                                    if size > 1 {
                                                         Cow::from(formatter(size).to_string())
                                                     } else {
                                                         Cow::from("")

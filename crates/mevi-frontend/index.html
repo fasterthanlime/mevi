@@ -15,6 +15,11 @@
             --rss-color: #97104f;
             --cell-text: #ffffff;
             --untracked-color: #b09b0d;
+
+            --yellow-stripe: hsl(59 79% 21% / 1);
+            --black-stripe: rgb(47, 47, 47);
+
+            --dark-grey: rgb(140, 140, 140);
         }
 
         body {
@@ -24,8 +29,8 @@
         }
 
         * {
-            /* font-family: 'Share Tech Mono', monospace; */
-            font-family: 'Source Code Pro', monospace;
+            font-family: 'Share Tech Mono', monospace;
+            /* font-family: 'Source Code Pro', monospace; */
             font-size: 16px;
         }
 
@@ -37,7 +42,7 @@
             display: flex;
             flex-direction: row;
             align-items: center;
-            gap: 1em;
+            gap: .5em;
 
             background: var(--body-bg);
             z-index: 40;
@@ -45,8 +50,33 @@
             font-size: 150%;
         }
 
+        .brand {
+            font-weight: bold;
+            padding: .2em .6em;
+            color: rgb(233, 58, 143);
+            font-size: 80%;
+        }
+
+        .brand .brand-rest {
+            color: #53cdfa;
+        }
+
+        .live-indicator {
+            border-radius: 4px;
+            padding: .2em .6em;
+        }
+
+        .live-indicator.offline {
+            background-image: repeating-linear-gradient(45deg, var(--black-stripe) 10px, var(--yellow-stripe) 10px, var(--yellow-stripe) 20px, var(--black-stripe) 20px, var(--black-stripe) 30px);
+            color: white;
+        }
+
+        .live-indicator.live {
+            color: var(--dark-grey);
+        }
+
         .mem-stats-container .mem-stats {
-            min-width: 12em;
+            /* min-width: 8em; */
             padding: .3em .6em;
         }
 
@@ -68,8 +98,8 @@
         .process {
             margin-bottom: 1em;
             border-top: 1px dashed rgba(255, 255, 255, 0.3);
-            padding-top: .3em;
-            padding-left: .3em;
+            padding-top: .5em;
+            padding-left: .5em;
         }
 
         .process-info {
@@ -77,6 +107,7 @@
             display: flex;
             flex-wrap: wrap;
             gap: .2em;
+            padding-bottom: .5em;
         }
 
         .pid, .arg {
@@ -90,9 +121,8 @@
         }
 
         .mem-stats .name {
-            font-variant: small-caps;
-            font-size: 110%;
-            margin-right: 1em;
+            font-weight: bold;
+            margin-right: .5em;
         }
 
         .mem-stats.virt {
@@ -105,6 +135,8 @@
 
         .group-gap {
             text-align: center;
+            font-size: 80%;
+            padding: .3em 0;
         }
 
         .group-outer {
@@ -112,7 +144,6 @@
             display: flex;
             flex-direction: row;
             align-items: center;
-            /* padding-left: 2em; */
         }
 
         .group-header {
@@ -123,6 +154,7 @@
 
         .group-header .scale {
             font-size: 80%;
+            text-align: right;
         }
 
         .group {
