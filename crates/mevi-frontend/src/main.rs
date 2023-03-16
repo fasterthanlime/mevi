@@ -202,30 +202,43 @@ fn app() -> Html {
                                     for group in groups {
                                         let mut group_markup = vec![];
 
-                                        let mut max_mb: u64 = 16 * 1024;
-                                        while max_mb < group.size {
-                                            max_mb *= 2;
+                                        let mut max_bytes: u64 = 16 * 1024;
+                                        while max_bytes < group.size {
+                                            max_bytes *= 2;
                                         }
-                                        let max_mb_f = max_mb as f64;
+                                        let scale_ratio = 1.0 / (max_bytes as f64 * 100.0);
+                                        let min_size_for_print = max_bytes / 16;
 
                                         for (range, mem_state) in group.ranges {
                                             let size = range.end - range.start;
-                                            // if size < 4 * 4096 {
-                                            //     continue;
-                                            // }
+                                            if size < 4 * 4096 {
+                                                continue;
+                                            }
 
-                                            let style = format!("width: {}%; left: {}%;", size as f64 / max_mb_f * 100.0, (range.start - group.start) as f64 / max_mb_f * 100.0);
-                                            group_markup.push(html! {
-                                                <i class={format!("{:?}", mem_state)} title={format!("{} at {:x?}", formatter(size), range)} style={style}>{
-                                                    // if size > 4 * 1024 * 1024 {
-                                                    // if size > 128 * 1024 {
-                                                    if size > 1 {
-                                                        Cow::from(formatter(size).to_string())
-                                                    } else {
-                                                        Cow::from("")
-                                                    }
-                                                }</i>
-                                            })
+                                            // avoid some allocations
+                                            let state_class = |ms: MemState| -> &'static str {
+                                                match ms {
+                                                    MemState::Resident => "r",
+                                                    MemState::NotResident => "n",
+                                                    MemState::Untracked => "u",
+                                                }
+                                            };
+
+                                            let style = format!("width:{}%;left:{}%;", size as f64 * scale_ratio, (range.start - group.start) as f64 * scale_ratio);
+                                            let h = if size >= min_size_for_print {
+                                                html! {
+                                                    <i class={state_class(mem_state)} title={format!("{} at {:x?}", formatter(size), range)} style={style}>{
+                                                        formatter(size).to_string()
+                                                    }</i>
+                                                }
+                                            } else {
+                                                html! {
+                                                    <i class={state_class(mem_state)} style={style}>{
+                                                        formatter(size).to_string()
+                                                    }</i>
+                                                }
+                                            };
+                                            group_markup.push(h)
                                         }
 
                                         if !group_markup.is_empty() {

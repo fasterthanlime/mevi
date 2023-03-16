@@ -9,7 +9,6 @@ use tracing::info;
 pub enum MemState {
     Resident,
     NotResident,
-    Unmapped,
     Untracked,
 }
 
@@ -121,7 +120,6 @@ impl TraceePayload {
                 map.insert(range.clone(), MemState::Resident);
             }
             TraceePayload::PageOut { range } => {
-                info!("page out: {:x?}", range);
                 map.insert(range.clone(), MemState::NotResident);
             }
             TraceePayload::Unmap { range } => {
