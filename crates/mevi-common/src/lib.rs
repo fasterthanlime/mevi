@@ -133,7 +133,7 @@ impl TraceePayload {
                 let formatter = make_format(BINARY);
 
                 if old_range.start == new_range.start {
-                    // we either grew in place or shrunk
+                    // we either grew in place or shrunk in place
 
                     // if we shrunk, unmap the extra pages
                     if new_range.end < old_range.end {
@@ -164,7 +164,7 @@ impl TraceePayload {
                     // now copy over old state
                     for (old_subrange, old_state) in map.overlapping(old_range) {
                         let mut subrange_old = old_subrange.clone();
-                        // clamp to old range
+                        // clamp to old range (in case it "spilled" left or right outside of the old range)
                         if subrange_old.start < old_range.start {
                             subrange_old.start = old_range.start;
                         }
@@ -187,15 +187,27 @@ impl TraceePayload {
                             subrange_new.end += diff;
                         }
 
-                        info!(
-                            "remap: {:x?} ({}) => {:x?} ({}) = {:?}",
-                            subrange_old,
-                            formatter(subrange_old.end - subrange_old.start),
-                            subrange_new,
-                            formatter(subrange_new.end - subrange_new.start),
-                            old_state
-                        );
-                        merge_state.insert(subrange_new, *old_state);
+                        // clamp to new range (in case we shrunk)
+                        if subrange_new.start < new_range.start {
+                            subrange_new.start = new_range.start;
+                        }
+                        if subrange_new.end > new_range.end {
+                            subrange_new.end = new_range.end;
+                        }
+
+                        if subrange_new.start == subrange_new.end {
+                            // this can happen if we shrunk, just ignore that update
+                        } else {
+                            tracing::debug!(
+                                "remap: {:x?} ({}) => {:x?} ({}) = {:?}",
+                                subrange_old,
+                                formatter(subrange_old.end - subrange_old.start),
+                                subrange_new,
+                                formatter(subrange_new.end - subrange_new.start),
+                                old_state
+                            );
+                            merge_state.insert(subrange_new, *old_state);
+                        }
                     }
 
                     // now remove old range

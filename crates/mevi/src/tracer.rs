@@ -476,14 +476,20 @@ impl Tracee {
         );
 
         let sys_step = || {
-            ptrace::syscall(pid, None)?;
+            if let Err(e) = ptrace::syscall(pid, None) {
+                // if ESRCH, the process is dead, we can ignore that
+                if e == nix::Error::ESRCH {
+                    warn!("{} died while connecting, ignoring", self.tid);
+                    return Ok(());
+                }
+            }
             let waitres = waitpid(pid, None)?;
             match waitres {
                 WaitStatus::PtraceSyscall(_) => {
                     // good.
                 }
                 WaitStatus::Stopped(pid, signal) => {
-                    // forward signal, try to step agai
+                    // forward signal, try to step again
                     ptrace::syscall(pid, signal)?;
                 }
                 other => {
