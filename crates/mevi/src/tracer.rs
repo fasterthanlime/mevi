@@ -287,7 +287,7 @@ impl Tracee {
                     // bad idea, we're about to replace all memory mappings anyway
                 }
                 syscall_nr => {
-                    info!(
+                    debug!(
                         "{} connecting as syscall {syscall_nr} is returning",
                         self.tid
                     );
@@ -329,7 +329,7 @@ impl Tracee {
                     && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
                 {
                     let range = ret..ret + len;
-                    info!("{} thread of {for_tid} just did mmap {range:x?} addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd} ret={ret:x?}", self.tid);
+                    debug!("{} thread of {for_tid} just did mmap {range:x?} addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd} ret={ret:x?}", self.tid);
                     return Ok(Some(MemoryEvent {
                         for_tid,
                         change: MemoryChange::Map {
@@ -357,7 +357,7 @@ impl Tracee {
                     let formatter = make_format(BINARY);
                     let old_len = formatter(old_len);
                     let new_len = formatter(new_len);
-                    info!("{} thread of {for_tid} just did mremap {old_range:x?} => {new_range:x?} addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
+                    debug!("{} thread of {for_tid} just did mremap {old_range:x?} => {new_range:x?} addr={addr:x?} old_len={old_len} new_len={new_len} flags={flags:x?} new_addr={new_addr:x?}", self.tid);
                 }
 
                 return Ok(Some(MemoryEvent {
@@ -376,7 +376,7 @@ impl Tracee {
                 {
                     let formatter = make_format(BINARY);
                     let len = formatter(len);
-                    info!(
+                    debug!(
                         "{} thread of {for_tid} just did munmap {range:x?} addr={addr:x?} len={len}",
                         self.tid
                     );
@@ -397,7 +397,7 @@ impl Tracee {
                         {
                             let formatter = make_format(BINARY);
                             let len = formatter(len);
-                            info!("{} thread of {for_tid} just did madvise-dontneed/remove addr={addr:x?} len={len} advice={advice}", self.tid);
+                            debug!("{} thread of {for_tid} just did madvise-dontneed/remove addr={addr:x?} len={len} advice={advice}", self.tid);
                         }
 
                         return Ok(Some(MemoryEvent {
@@ -426,7 +426,7 @@ impl Tracee {
 
                         if heap_range.end > old_top {
                             // heap just grew
-                            info!("heap grew from {old_top:x?} to {:x?}", heap_range.end);
+                            debug!("heap grew from {old_top:x?} to {:x?}", heap_range.end);
                             return Ok(Some(MemoryEvent {
                                 for_tid,
                                 change: MemoryChange::Map {
@@ -437,7 +437,7 @@ impl Tracee {
                         }
                         if heap_range.end < old_top {
                             // heap just shrunk
-                            info!("heap shrunk from {old_top:x?} to {:x?}", heap_range.end);
+                            debug!("heap shrunk from {old_top:x?} to {:x?}", heap_range.end);
                             return Ok(Some(MemoryEvent {
                                 for_tid,
                                 change: MemoryChange::Unmap {
@@ -518,7 +518,7 @@ impl Tracee {
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
 
         if real_pid != tid {
-            info!("{tid} is a thread of {real_pid}");
+            debug!("{tid} is a thread of {real_pid}");
             self.kind = TraceeKind::ThreadOf { pid: real_pid };
             ptrace::setregs(pid, saved_regs)?;
             return Ok(());

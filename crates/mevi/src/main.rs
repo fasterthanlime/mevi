@@ -21,7 +21,7 @@ use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
 
@@ -244,7 +244,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                     );
                 } else {
                     tracee.uffd = Some(unsafe { Uffd::from_raw_fd(uffd as RawFd) });
-                    info!(
+                    debug!(
                         "{} connected to uffd {:?} from {source:?}",
                         tracee.tid, uffd
                     );

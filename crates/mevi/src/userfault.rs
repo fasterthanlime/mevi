@@ -11,7 +11,7 @@ use humansize::{make_format, BINARY};
 use mevi_common::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use userfaultfd::Uffd;
 
 pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
@@ -29,7 +29,7 @@ pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
         let tid = TraceeId(u64::from_le_bytes(pid_bytes));
 
         let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-        info!("{tid} received uffd {}", uffd.as_raw_fd());
+        debug!("{tid} received uffd {}", uffd.as_raw_fd());
 
         tx.send(MeviEvent::TraceeEvent(
             tid,
