@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, ops::Range};
+use std::{collections::HashMap, ops::Range};
 
 use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
