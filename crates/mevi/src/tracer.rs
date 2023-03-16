@@ -214,6 +214,8 @@ impl Tracer {
                             if e == nix::errno::Errno::ESRCH {
                                 // the process has exited, we don't care
                                 info!("{pid} exited while we spied");
+                            } else {
+                                panic!("while doing setregs: {e}")
                             }
                         }
                     } else {
@@ -294,7 +296,19 @@ impl Tracee {
                         "{} connecting as syscall {syscall_nr} is returning",
                         self.tid
                     );
-                    self.connect(regs)?;
+                    if let Err(e) = self.connect(regs) {
+                        if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
+                            if nix_err == &nix::Error::ESRCH {
+                                // the process has exited, we don't care
+                                info!(
+                                    "{} exited while we were trying to connect to it, that's ok",
+                                    self.tid
+                                );
+                                return Ok(None);
+                            }
+                        }
+                        panic!("while connecting: {e}");
+                    }
                 }
             }
         }
@@ -753,30 +767,6 @@ impl Tracee {
             heap_range: ret..ret,
         };
         ptrace::setregs(pid, saved_regs)?;
-
-        // info!("{tid} now let's query proc maps");
-        // let maps = proc_maps::get_process_maps(tid.0 as _)?;
-        // for map in maps {
-        //     if map.filename().is_none() && map.is_read() && map.is_write() {
-        //         info!(
-        //             "- {:x?}..{:x?} R={}, W={} {map:?}",
-        //             map.start(),
-        //             map.start() + map.size(),
-        //             map.is_read(),
-        //             map.is_write()
-        //         );
-        //         tx.send(MeviEvent::TraceeEvent(
-        //             tid,
-        //             TraceePayload::Map {
-        //                 range: map.start()..map.start() + map.size(),
-        //                 state: MemState::NotResident,
-        //                 _guard: MapGuard { _inner: None },
-        //             },
-        //         ))
-        //         .unwrap();
-        //         info!("Let's hope that's not a race condition");
-        //     }
-        // }
 
         Ok(())
     }

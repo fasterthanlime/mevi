@@ -44,6 +44,16 @@ pub enum MeviEvent {
     TraceeEvent(TraceeId, TraceePayload),
 }
 
+impl MeviEvent {
+    pub fn serialize(&self) -> postcard::Result<Vec<u8>> {
+        postcard::to_allocvec(self)
+    }
+
+    pub fn deserialize(data: &[u8]) -> postcard::Result<Self> {
+        postcard::from_bytes(data)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceeSnapshot {
     pub tid: TraceeId,

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
 use instant::{Duration, Instant};
@@ -87,8 +87,8 @@ fn app() -> Html {
 
                 spawn_local(async move {
                     let mut last_flush = Instant::now();
-                    let mut batch_size = 0;
-                    let flush_every = Duration::from_millis(16);
+                    // let mut batch_size = 0;
+                    let flush_every = Duration::from_millis(33);
 
                     let (mut _write, mut read) = connect_to_ws().await.split();
                     live.set(true);
@@ -111,24 +111,24 @@ fn app() -> Html {
                         live.set(true);
                         match msg {
                             Message::Text(t) => {
-                                gloo_console::log!(format!("text message: {t}"));
-                                if t == "flush" {
+                                // gloo_console::log!(format!("text message: {t}"));
+                                if t == "flush" && last_flush.elapsed() > flush_every {
                                     tracees.set(tracees_acc.clone());
                                     last_flush = Instant::now();
-                                    batch_size = 0;
+                                    // batch_size = 0;
                                 }
                             }
                             Message::Bytes(b) => {
-                                let ev: MeviEvent = bincode::deserialize(&b).unwrap();
+                                let ev = MeviEvent::deserialize(&b).unwrap();
                                 // gloo_console::log!(format!("{:?}", ev));
 
                                 apply_ev(&mut tracees_acc, ev);
-                                batch_size += 1;
+                                // batch_size += 1;
                                 if last_flush.elapsed() > flush_every {
-                                    gloo_console::log!(format!("flushing {} events", batch_size));
+                                    // gloo_console::log!(format!("flushing {} events", batch_size));
                                     tracees.set(tracees_acc.clone());
                                     last_flush = Instant::now();
-                                    batch_size = 0;
+                                    // batch_size = 0;
                                 }
                             }
                         }
@@ -200,10 +200,12 @@ fn app() -> Html {
                                         return html!{ };
                                     }
 
+                                    let mut num_ranges = 0_u64;
                                     let mut groups: Vec<Group> = vec![];
                                     // let threshold_new_group = 4 * 1024 * 1024;
                                     let threshold_new_group = 128 * 1024 * 1024;
                                     for (range, state) in map.iter() {
+                                        num_ranges += 1;
                                         if let Some(last_group) = groups.last() {
                                             if range.start - (last_group.start + last_group.size) > threshold_new_group || last_group.size >= 30 * 1024 * 1024 {
                                                 groups.push(Group {
@@ -242,9 +244,20 @@ fn app() -> Html {
                                         let scale_ratio = 100.0 / (max_bytes as f64);
                                         let min_size_for_print = max_bytes / 16;
 
+                                        let mut min_size_for_show = 4096;
+                                        if num_ranges > 4 * 1024 {
+                                            min_size_for_show = 2 * 4096;
+                                        }
+                                        if num_ranges > 8 * 1024 {
+                                            min_size_for_show = 3 * 4096;
+                                        }
+                                        if num_ranges > 16 * 1024 {
+                                            min_size_for_show = 4 * 4096;
+                                        }
+
                                         for (range, mem_state) in group.ranges {
                                             let size = range.end - range.start;
-                                            if size < 4 * 4096 {
+                                            if size < min_size_for_show {
                                                 continue;
                                             }
 

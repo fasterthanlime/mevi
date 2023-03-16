@@ -87,7 +87,7 @@ struct TraceeState {
 impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
         let ev = MeviEvent::TraceeEvent(self.tid, payload);
-        let payload = bincode::serialize(&ev).unwrap();
+        let payload = ev.serialize().unwrap();
         _ = self.w_tx.blocking_send(payload);
     }
 
@@ -186,7 +186,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                     });
                 }
                 _ = payload_tx
-                    .blocking_send(bincode::serialize(&MeviEvent::Snapshot(snap_tracees)).unwrap());
+                    .blocking_send(MeviEvent::Snapshot(snap_tracees).serialize().unwrap());
                 continue;
             }
             MeviEvent::TraceeEvent(tid, ev) => (tid, ev),
@@ -206,7 +206,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                     cmdline: cmdline.clone(),
                 },
             );
-            _ = payload_tx.blocking_send(bincode::serialize(&ev).unwrap());
+            _ = payload_tx.blocking_send(ev.serialize().unwrap());
 
             TraceeState {
                 tid,
