@@ -277,6 +277,12 @@ fn app() -> Html {
                                         if num_ranges > 16 * 1024 {
                                             min_size_for_show = 4 * 4096;
                                         }
+                                        if num_ranges > 32 * 1024 {
+                                            min_size_for_show = 5 * 4096;
+                                        }
+                                        if num_ranges > 64 * 1024 {
+                                            min_size_for_show = 6 * 4096;
+                                        }
 
                                         for (range, mem_state) in group.ranges {
                                             let size = range.end - range.start;
