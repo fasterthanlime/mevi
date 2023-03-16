@@ -1,4 +1,8 @@
-use std::{fmt, ops::Range, sync::mpsc};
+use std::{
+    fmt,
+    ops::Range,
+    sync::{mpsc, Mutex},
+};
 
 use humansize::{make_format, BINARY};
 use rangemap::RangeMap;
@@ -38,20 +42,18 @@ impl From<TraceeId> for nix::unistd::Pid {
 
 pub type MemMap = RangeMap<u64, MemState>;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum MeviEvent {
     Snapshot(Vec<TraceeSnapshot>),
     TraceeEvent(TraceeId, TraceePayload),
 }
 
-impl MeviEvent {
-    pub fn serialize(&self) -> postcard::Result<Vec<u8>> {
-        postcard::to_allocvec(self)
-    }
+pub fn serialize_many(events: &[MeviEvent]) -> postcard::Result<Vec<u8>> {
+    postcard::to_allocvec(events)
+}
 
-    pub fn deserialize(data: &[u8]) -> postcard::Result<Self> {
-        postcard::from_bytes(data)
-    }
+pub fn deserialize_many(data: &[u8]) -> postcard::Result<Vec<MeviEvent>> {
+    postcard::from_bytes(data)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +106,7 @@ pub enum ConnectSource {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MapGuard {
     #[serde(skip)]
-    pub _inner: Option<mpsc::Sender<()>>,
+    pub _inner: Option<Mutex<mpsc::Sender<()>>>,
 }
 
 impl Clone for MapGuard {

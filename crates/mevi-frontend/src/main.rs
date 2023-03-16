@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use futures_util::{FutureExt, StreamExt, TryStreamExt};
+use futures_util::{FutureExt, StreamExt};
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
 use instant::{Duration, Instant};
@@ -138,11 +138,13 @@ fn app() -> Html {
                                 }
                             }
                             Message::Bytes(b) => {
-                                let ev = MeviEvent::deserialize(&b).unwrap();
+                                let evs = mevi_common::deserialize_many(&b).unwrap();
+                                batch_size += evs.len();
 
-                                // gloo_console::log!(format!("{:?}", ev));
-                                apply_ev(&mut tracees_acc, ev);
-                                batch_size += 1;
+                                for ev in evs {
+                                    // gloo_console::log!(format!("{:?}", ev));
+                                    apply_ev(&mut tracees_acc, ev);
+                                }
 
                                 if waited && last_flush.elapsed() > flush_every {
                                     gloo_console::log!(format!(

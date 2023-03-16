@@ -21,6 +21,7 @@ use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
 use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
+use tokio::time::Instant;
 use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
@@ -80,15 +81,14 @@ struct TraceeState {
     batch: MemMap,
     batch_size: usize,
     uffd: Option<Uffd>,
-    w_tx: broadcast::Sender<Vec<u8>>,
+    w_tx: broadcast::Sender<MeviEvent>,
     printed_uffd_warning: bool,
 }
 
 impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
         let ev = MeviEvent::TraceeEvent(self.tid, payload);
-        let payload = ev.serialize().unwrap();
-        _ = self.w_tx.blocking_send(payload);
+        _ = self.w_tx.blocking_send(ev.clone());
     }
 
     fn flush(&mut self) {
@@ -147,9 +147,8 @@ impl TraceeState {
     }
 }
 
-fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec<u8>>) {
+fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<MeviEvent>) {
     let mut tracees: HashMap<TraceeId, TraceeState> = Default::default();
-    // let interval = Duration::from_millis(16 * 3);
     let interval = Duration::from_millis(16 * 6);
 
     loop {
@@ -185,8 +184,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                         map: tracee.map.clone(),
                     });
                 }
-                _ = payload_tx
-                    .blocking_send(MeviEvent::Snapshot(snap_tracees).serialize().unwrap());
+                _ = payload_tx.blocking_send(MeviEvent::Snapshot(snap_tracees));
                 continue;
             }
             MeviEvent::TraceeEvent(tid, ev) => (tid, ev),
@@ -206,7 +204,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                     cmdline: cmdline.clone(),
                 },
             );
-            _ = payload_tx.blocking_send(ev.serialize().unwrap());
+            _ = payload_tx.blocking_send(ev);
 
             TraceeState {
                 tid,
@@ -285,7 +283,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
 
 #[derive(Clone)]
 struct RouterState {
-    payload_tx: broadcast::Sender<Vec<u8>>,
+    payload_tx: broadcast::Sender<MeviEvent>,
     ev_tx: mpsc::SyncSender<MeviEvent>,
 }
 
@@ -297,17 +295,28 @@ async fn stream(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> imp
     })
 }
 
-async fn handle_ws(mut payload_rx: broadcast::Receiver<Vec<u8>>, mut ws: WebSocket) {
+async fn handle_ws(mut payload_rx: broadcast::Receiver<MeviEvent>, mut ws: WebSocket) {
+    let interval = Duration::from_millis(16);
+    let mut next_flush = Instant::now() + interval;
+    let mut queue = vec![];
+
     loop {
-        let payload = match tokio::time::timeout(Duration::from_millis(16), payload_rx.recv()).await
-        {
-            Ok(payload) => payload,
+        let ev = match tokio::time::timeout_at(next_flush, payload_rx.recv()).await {
+            Ok(ev) => {
+                let ev = ev.unwrap();
+                queue.push(ev);
+            }
             Err(_elapsed) => {
-                ws.send(Message::Text("flush".to_string())).await.unwrap();
-                payload_rx.recv().await
+                if !queue.is_empty() {
+                    ws.send(Message::Binary(
+                        mevi_common::serialize_many(&queue[..]).unwrap(),
+                    ))
+                    .await
+                    .unwrap();
+                    queue.clear();
+                }
+                next_flush += interval;
             }
         };
-        let payload = payload.unwrap();
-        ws.send(Message::Binary(payload)).await.unwrap();
     }
 }
