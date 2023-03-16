@@ -204,7 +204,10 @@ impl Tracer {
                                 MemoryChange::PageOut { range } => {
                                     let ev = MeviEvent::TraceeEvent(
                                         for_tid,
-                                        TraceePayload::PageOut { range },
+                                        TraceePayload::MemStateChange {
+                                            range,
+                                            state: MemState::NotResident,
+                                        },
                                     );
                                     self.tx.send(ev).unwrap();
                                 }

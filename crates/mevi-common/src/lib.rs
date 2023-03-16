@@ -71,11 +71,9 @@ pub enum TraceePayload {
         uffd: u64,
     },
     Execve,
-    PageIn {
+    MemStateChange {
         range: Range<u64>,
-    },
-    PageOut {
-        range: Range<u64>,
+        state: MemState,
     },
     Unmap {
         range: Range<u64>,
@@ -85,10 +83,7 @@ pub enum TraceePayload {
         new_range: Range<u64>,
         _guard: MapGuard,
     },
-    Batch {
-        batch: MemMap,
-    },
-    Start {
+    CmdLineChange {
         cmdline: Vec<String>,
     },
     Exit,
@@ -124,9 +119,6 @@ impl TraceePayload {
     pub fn apply_to_memmap(&self, map: &mut MemMap) {
         match self {
             TraceePayload::Map { range, state, .. } => {
-                if range.start >= range.end {
-                    panic!("map range is invalid: {range:x?}");
-                }
                 map.insert(range.clone(), *state);
             }
             TraceePayload::Connected { .. } => {
@@ -136,17 +128,8 @@ impl TraceePayload {
                 // all the mappings are invalidated on exec
                 map.clear();
             }
-            TraceePayload::PageIn { range } => {
-                if range.start >= range.end {
-                    panic!("pagein range is invalid: {range:x?}");
-                }
-                map.insert(range.clone(), MemState::Resident);
-            }
-            TraceePayload::PageOut { range } => {
-                if range.start >= range.end {
-                    panic!("pageout range is invalid: {range:x?}");
-                }
-                map.insert(range.clone(), MemState::NotResident);
+            TraceePayload::MemStateChange { range, state } => {
+                map.insert(range.clone(), *state);
             }
             TraceePayload::Unmap { range } => {
                 if range.start >= range.end {
@@ -248,15 +231,7 @@ impl TraceePayload {
                     }
                 }
             }
-            TraceePayload::Batch { batch } => {
-                for (range, mem_state) in batch.iter() {
-                    if range.start >= range.end {
-                        panic!("batched range is invalid: {range:x?}");
-                    }
-                    map.insert(range.clone(), *mem_state);
-                }
-            }
-            TraceePayload::Start { .. } => {
+            TraceePayload::CmdLineChange { .. } => {
                 // do nothing
             }
             TraceePayload::Exit { .. } => {

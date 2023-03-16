@@ -122,12 +122,22 @@
             gap: .4em;
             padding-bottom: .5em;
 
-            overflow-x: auto;
+            /* overflow-x: auto;
+            white-space: nowrap; */
+
+            /* flex-wrap: wrap; */
+
+            overflow-x: hidden;
             white-space: nowrap;
+            text-overflow: ellipsis;
         }
 
-        .pid, .arg {
+        .arg {
             padding: .2em;
+            transition: all 0.2s;
+        }
+
+        .arg:hover {
             background: #f2f2f2;
             color: black;
         }

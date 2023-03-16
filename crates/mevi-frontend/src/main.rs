@@ -145,6 +145,7 @@ fn app() -> Html {
                             Message::Bytes(b) => {
                                 let evs = mevi_common::deserialize_many(&b).unwrap();
                                 batch_size += evs.len();
+                                _ = batch_size;
 
                                 for ev in evs {
                                     // gloo_console::log!(format!("{:?}", ev));
@@ -152,7 +153,7 @@ fn app() -> Html {
                                 }
 
                                 tracees.set(tracees_acc.clone());
-                                gloo_console::log!(format!("flushing {} events", batch_size));
+                                // gloo_console::log!(format!("flushing {} events", batch_size));
                                 batch_size = 0;
                             }
                         }
@@ -202,7 +203,7 @@ fn app() -> Html {
                         <>
                             <div class="process">
                                 <div class="process-info">
-                                    <span class="pid">{"PID "}{tracee.tid.0}</span>
+                                    <span class="arg">{"PID "}{tracee.tid.0}</span>
                                     {{
                                         // collect virt/rss stats for process
                                         let mut virt: u64 = 0;
@@ -408,7 +409,7 @@ fn apply_ev(tracees: &mut HashMap<TraceeId, TraceeState>, ev: MeviEvent) {
 
     payload.apply_to_memmap(&mut tracee.map);
     match payload {
-        TraceePayload::Start { cmdline } => {
+        TraceePayload::CmdLineChange { cmdline } => {
             tracee.cmdline = cmdline;
         }
         TraceePayload::Exit { .. } => {

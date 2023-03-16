@@ -8,7 +8,7 @@ use std::{
 };
 
 use humansize::{make_format, BINARY};
-use mevi_common::{ConnectSource, MeviEvent, TraceeId, TraceePayload};
+use mevi_common::{ConnectSource, MemState, MeviEvent, TraceeId, TraceePayload};
 use nix::unistd::{sysconf, SysconfVar};
 use passfd::FdPassingExt;
 use tracing::{debug, warn};
@@ -87,9 +87,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                             // hand.  worst case scenario we get another event
                             // from the same range.
                             debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
-
                             uffd.wake(addr, page_size as _).unwrap();
-                            break;
                         }
                         libc::EBADF => {
                             warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
@@ -106,8 +104,9 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                     }
                 }
                 let addr = addr as u64;
-                send_ev(TraceePayload::PageIn {
+                send_ev(TraceePayload::MemStateChange {
                     range: addr..addr + page_size,
+                    state: MemState::Resident,
                 });
             }
             userfaultfd::Event::Remap { from, to, len } => {

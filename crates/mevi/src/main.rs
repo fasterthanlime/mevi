@@ -31,10 +31,6 @@ mod userfault;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
 
-lazy_static::lazy_static! {
-    static ref BATCH_SIZE: usize = std::env::var("MEVI_BATCH_SIZE").map(|s| s.parse().unwrap()).unwrap_or(1024);
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
@@ -78,8 +74,6 @@ struct TraceeState {
     tid: TraceeId,
     cmdline: Vec<String>,
     map: MemMap,
-    batch: MemMap,
-    batch_size: usize,
     uffd: Option<Uffd>,
     w_tx: broadcast::Sender<MeviEvent>,
     printed_uffd_warning: bool,
@@ -89,25 +83,6 @@ impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
         let ev = MeviEvent::TraceeEvent(self.tid, payload);
         _ = self.w_tx.blocking_send(ev);
-    }
-
-    fn flush(&mut self) {
-        if self.batch_size == 0 {
-            return;
-        }
-
-        self.batch_size = 0;
-        let batch = std::mem::take(&mut self.batch);
-        self.send_ev(TraceePayload::Batch { batch });
-    }
-
-    fn accumulate(&mut self, range: Range<u64>, state: MemState) {
-        if self.batch_size > *BATCH_SIZE {
-            self.flush();
-        }
-
-        self.batch.insert(range, state);
-        self.batch_size += 1;
     }
 
     fn register(&mut self, range: &Range<u64>, state: MemState) {
@@ -136,12 +111,9 @@ impl TraceeState {
             }
 
             self.map.insert(range.clone(), MemState::Untracked);
-            self.send_ev(TraceePayload::Batch {
-                batch: {
-                    let mut batch: MemMap = Default::default();
-                    batch.insert(range.clone(), MemState::Untracked);
-                    batch
-                },
+            self.send_ev(TraceePayload::MemStateChange {
+                range: range.clone(),
+                state: MemState::Untracked,
             });
         }
     }
@@ -149,36 +121,14 @@ impl TraceeState {
 
 fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<MeviEvent>) {
     let mut tracees: HashMap<TraceeId, TraceeState> = Default::default();
-    let interval = Duration::from_millis(16 * 6);
 
     loop {
-        let mut first = true;
-        let ev = loop {
-            if first {
-                match ev_rx.recv_timeout(interval) {
-                    Ok(ev) => break ev,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        first = false;
-                        continue;
-                    }
-                    _ => unreachable!(),
-                };
-            } else {
-                // didn't get an event in `interval`, block until we get one,
-                // but first, flush all batches
-                tracing::info!("flushing all batches");
-                for tracee in tracees.values_mut() {
-                    tracee.flush();
-                }
-                break ev_rx.recv().unwrap();
-            }
-        };
+        let ev = ev_rx.recv().unwrap();
         debug!("{:?}", ev.blue());
 
         let (tid, payload) = match ev {
             MeviEvent::Snapshot(mut snap_tracees) => {
                 for tracee in tracees.values_mut() {
-                    tracee.flush();
                     snap_tracees.push(TraceeSnapshot {
                         tid: tracee.tid,
                         cmdline: tracee.cmdline.clone(),
@@ -192,16 +142,10 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
         };
 
         let tracee = tracees.entry(tid).or_insert_with(|| {
-            let cmdline: Vec<String> = std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
-                .unwrap_or_default()
-                .split('\0')
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_owned())
-                .collect();
-
+            let cmdline = get_cmdline(tid);
             let ev = MeviEvent::TraceeEvent(
                 tid,
-                TraceePayload::Start {
+                TraceePayload::CmdLineChange {
                     cmdline: cmdline.clone(),
                 },
             );
@@ -211,26 +155,15 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
                 tid,
                 cmdline,
                 map: Default::default(),
-                batch: Default::default(),
-                batch_size: 0,
                 uffd: None,
                 w_tx: payload_tx.clone(),
                 printed_uffd_warning: false,
             }
         });
 
-        match &payload {
-            TraceePayload::PageIn { range } => tracee.accumulate(range.clone(), MemState::Resident),
-            TraceePayload::PageOut { range } => {
-                tracee.accumulate(range.clone(), MemState::NotResident)
-            }
-            payload => {
-                tracee.flush();
-                tracee.send_ev(payload.clone());
-            }
-        };
-
         payload.apply_to_memmap(&mut tracee.map);
+        tracee.send_ev(payload.clone());
+
         match payload {
             TraceePayload::Map { range, state, .. } => {
                 tracee.register(&range, state);
@@ -250,9 +183,14 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
                 }
             }
             TraceePayload::Execve => {
-                debug!("{} will execve, clearing uffd", tracee.tid);
+                debug!("{} just execve'd, clearing uffd", tracee.tid);
                 tracee.uffd = None;
                 // map is cleared by apply_to_memmap
+
+                // update cmdline while we're at it
+                let cmdline = get_cmdline(tracee.tid);
+                tracee.cmdline = cmdline.clone();
+                tracee.send_ev(TraceePayload::CmdLineChange { cmdline });
             }
             TraceePayload::Remap {
                 old_range,
@@ -266,10 +204,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
                     formatter(new_range.end - new_range.start),
                 );
             }
-            TraceePayload::Batch { .. } => {
-                unreachable!()
-            }
-            TraceePayload::Start { .. } => {
+            TraceePayload::CmdLineChange { .. } => {
                 unreachable!()
             }
             TraceePayload::Exit => {
@@ -322,4 +257,13 @@ async fn handle_ws(mut payload_rx: broadcast::Receiver<MeviEvent>, mut ws: WebSo
             }
         };
     }
+}
+
+fn get_cmdline(tid: TraceeId) -> Vec<String> {
+    std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
+        .collect()
 }
