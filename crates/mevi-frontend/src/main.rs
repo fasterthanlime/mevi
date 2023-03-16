@@ -72,8 +72,40 @@ async fn connect_to_ws() -> WebSocket {
     ws
 }
 
+#[derive(Clone)]
+struct Options {
+    show_gaps: bool,
+    show_nonresident_groups: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            show_gaps: true,
+            show_nonresident_groups: true,
+        }
+    }
+}
+
+impl Options {
+    fn toggle_show_gaps(&self) -> Self {
+        Self {
+            show_gaps: !self.show_gaps,
+            ..*self
+        }
+    }
+
+    fn toggle_show_nonresident_groups(&self) -> Self {
+        Self {
+            show_nonresident_groups: !self.show_nonresident_groups,
+            ..*self
+        }
+    }
+}
+
 #[function_component(App)]
 fn app() -> Html {
+    let options = use_state(Options::default);
     let live = use_state(|| false);
     let tracees = use_state(|| -> HashMap<TraceeId, TraceeState> { Default::default() });
 
@@ -145,11 +177,24 @@ fn app() -> Html {
     let formatter = make_format(BINARY);
     html! {
         <>
-            <div class="mem-stats-container">
+            <div class="top-bar">
                 <span class="brand"><span>{"me"}</span><span class="brand-rest">{"vi"}</span></span>
                 <span class="mem-stats rss"><span class="mem-square"></span><span class="name">{"RSS"}</span>{format!("{}", formatter(total_res))}</span>
                 <span class="mem-stats virt"><span class="mem-square"></span><span class="name">{"VSZ"}</span>{format!("{}", formatter(total_virt))}</span>
                 <span class={ if *live { "live-indicator live" } else { "live-indicator offline" } }>{ if *live { "LIVE" } else { "OFFLINE" } }</span>
+
+                <span class="option">
+                    <label>
+                        <input type="checkbox" checked={options.show_gaps} onclick={{ let options = options.clone(); move |_| options.set(options.toggle_show_gaps()) }} />
+                        {"Show gaps"}
+                    </label>
+                </span>
+                <span class="option">
+                    <label>
+                        <input type="checkbox" checked={options.show_nonresident_groups} onclick={{ let options = options.clone();  move |_| options.set(options.toggle_show_nonresident_groups()) }} />
+                        {"Show non-resident groups"}
+                    </label>
+                </span>
             </div>
             {{
                 tracees.values().sorted_by_key(|p| std::cmp::Reverse(p.total_rss())).map(|tracee| {
@@ -229,7 +274,7 @@ fn app() -> Html {
                                         let mut group_markup = vec![];
 
                                         let has_any_memory_resident = group.ranges.iter().any(|(_, state)| *state == MemState::Resident);
-                                        if !has_any_memory_resident {
+                                        if !has_any_memory_resident && !options.show_nonresident_groups {
                                             continue;
                                         }
 
@@ -295,7 +340,7 @@ fn app() -> Html {
                                                         if let Some(last_group_end) = last_group_end {
                                                             gap = group.start - last_group_end;
                                                         }
-                                                        if gap > 0 {
+                                                        if gap > 0 && options.show_gaps {
                                                             html! {
                                                                 <div class="group-gap">
                                                                     { format!("{} gap", formatter(group.start - last_group_end.unwrap_or_default())) }

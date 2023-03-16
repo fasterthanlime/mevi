@@ -87,7 +87,16 @@ gets out-of-sync with the kernel.
 ### Can I run this on a big program?
 
 Sure, Firefox works, with a non-snap version, and with sandbox disabled, like
-so (THIS IS DANGEROUS, THE SANDBOX IS THERE FOR A REASON):
+so (THIS IS DANGEROUS, THE SANDBOX IS THERE FOR A REASON).
+
+First let's make sure you don't have firefox running in the background:
+
+```shell
+$ pkill firefox
+# you can do it several times, until `pidof firefox` returns nothing
+```
+
+Then:
 
 ```shell
 $ RUST_LOG=error RUST_BACKTRACE=1 MOZ_DISABLE_CONTENT_SANDBOX=1 MOZ_DISABLE_GMP_SANDBOX=1 MOZ_DISABLE_RDD_SANDBOX=1 MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1 mevi /usr/lib/firefox/firefox
