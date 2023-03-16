@@ -75,9 +75,8 @@ comes from mapped files, and to a lesser extent, shared memory.
 
 ### I have a tiny program and everything goes by way too fast.
 
-Try setting the environment variable `MEVI_BATCH_SIZE` to `1` or a similarly
-small value. By default mevi batches page-ins/page-outs quite a bit to avoid
-slowing down real-world programs too muc.
+Try sleeping in your loops! Computers go fast noawadays and mevi _tries_ not to
+slow your program down.
 
 ### I have a multi-threaded program and it's all wrong
 
@@ -85,9 +84,14 @@ Yeah, sorry about that. userfaultfd events don't have all the info we need, and
 ptrace observes events out-of-order, so the view of multi-threaded programs
 gets out-of-sync with the kernel.
 
-Also, sometimes traced threads/processes get stuck. Ctrl+Z + `fg` unsticks them,
-presumably because it sends `SIGCONT` to everything, which means I messed up
-something at the ptrace level, ah well.
+### Can I run this on a big program?
+
+Sure, Firefox works, with a non-snap version, and with sandbox disabled, like
+so (THIS IS DANGEROUS, THE SANDBOX IS THERE FOR A REASON):
+
+```shell
+$ RUST_LOG=error RUST_BACKTRACE=1 MOZ_DISABLE_CONTENT_SANDBOX=1 MOZ_DISABLE_GMP_SANDBOX=1 MOZ_DISABLE_RDD_SANDBOX=1 MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1 mevi /usr/lib/firefox/firefox
+```
 
 ### Does this show backtraces?
 
