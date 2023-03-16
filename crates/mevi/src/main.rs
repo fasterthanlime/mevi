@@ -245,7 +245,6 @@ async fn handle_ws(mut payload_rx: broadcast::Receiver<MeviEvent>, mut ws: WebSo
             }
             Err(_elapsed) => {
                 if !queue.is_empty() {
-                    tracing::info!("flushing {}", queue.len());
                     ws.send(Message::Binary(
                         mevi_common::serialize_many(&queue[..]).unwrap(),
                     ))
