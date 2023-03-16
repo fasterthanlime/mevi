@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, ops::Range};
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload};
@@ -69,7 +69,7 @@ fn app() -> Html {
                 let mut tracees_acc = HashMap::new();
 
                 spawn_local(async move {
-                    let (mut write, mut read) = connect_to_ws().await.split();
+                    let (mut _write, mut read) = connect_to_ws().await.split();
                     live.set(true);
 
                     while let Some(msg) = read.next().await {
@@ -80,7 +80,7 @@ fn app() -> Html {
                                 live.set(false);
 
                                 gloo_console::log!("Reconnecting...");
-                                (write, read) = connect_to_ws().await.split();
+                                (_write, read) = connect_to_ws().await.split();
                                 tracees_acc.clear();
                                 tracees.set(tracees_acc.clone());
                                 live.set(true);
@@ -123,8 +123,8 @@ fn app() -> Html {
         <>
             <div class="mem-stats-container">
                 <span class="brand"><span>{"me"}</span><span class="brand-rest">{"vi"}</span></span>
-                <span class="mem-stats rss"><span class="name">{"RSS"}</span>{format!("{}", formatter(total_res))}</span>
-                <span class="mem-stats virt"><span class="name">{"VSZ"}</span>{format!("{}", formatter(total_virt))}</span>
+                <span class="mem-stats rss"><span class="mem-square"></span><span class="name">{"RSS"}</span>{format!("{}", formatter(total_res))}</span>
+                <span class="mem-stats virt"><span class="mem-square"></span><span class="name">{"VSZ"}</span>{format!("{}", formatter(total_virt))}</span>
                 <span class={ if *live { "live-indicator live" } else { "live-indicator offline" } }>{ if *live { "LIVE" } else { "OFFLINE" } }</span>
             </div>
             {{
@@ -147,8 +147,8 @@ fn app() -> Html {
                                         }
                                         html! {
                                             <>
-                                                <span class="mem-stats rss"><span>{format!("{}", formatter(res))}</span></span>
-                                                <span class="mem-stats virt"><span>{format!("{}", formatter(virt))}</span></span>
+                                                <span class="mem-stats rss"><span class="mem-square"></span><span>{format!("{}", formatter(res))}</span></span>
+                                                <span class="mem-stats virt"><span class="mem-square"></span><span>{format!("{}", formatter(virt))}</span></span>
                                             </>
                                         }
                                     }}

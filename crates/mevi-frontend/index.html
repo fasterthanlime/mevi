@@ -4,15 +4,17 @@
 <head>
     <title>mevi</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-        @import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap');
+        /* @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro&display=swap'); */
+        @import url('https://fonts.googleapis.com/css2?family=Righteous&display=swap');
+        @import url('https://iosevka-webfonts.github.io/iosevka/iosevka.css');
 
         :root {
-            --body-bg: #1e1d1c;
+            --body-bg: rgb(40, 40, 40);
             --group-bg: #0d1b2a;
 
-            --virt-color: #1c3956;
-            --rss-color: #97104f;
+            --virt-color: #195ea3;
+            --rss-color: #cb1f5f;
             --cell-text: #ffffff;
             --untracked-color: #b09b0d;
 
@@ -20,6 +22,8 @@
             --black-stripe: rgb(47, 47, 47);
 
             --dark-grey: rgb(140, 140, 140);
+
+            --pid-bg: #434343;
         }
 
         body {
@@ -29,9 +33,10 @@
         }
 
         * {
-            font-family: 'Share Tech Mono', monospace;
+            /* font-family: 'Share Tech Mono', monospace; */
             /* font-family: 'Source Code Pro', monospace; */
-            font-size: 16px;
+            font-family: 'Iosevka Web', monospace;
+            font-size: 18px;
         }
 
         .mem-stats-container {
@@ -42,7 +47,7 @@
             display: flex;
             flex-direction: row;
             align-items: center;
-            gap: .5em;
+            gap: .3em;
 
             background: var(--body-bg);
             z-index: 40;
@@ -50,15 +55,18 @@
             font-size: 150%;
         }
 
+        .brand > span {
+            font-family: 'Righteous', cursive;
+            font-size: 160%;
+        }
+
         .brand {
-            font-weight: bold;
-            padding: .2em .6em;
-            color: rgb(233, 58, 143);
-            font-size: 80%;
+            padding: 0em .6em;
+            color: white;
         }
 
         .brand .brand-rest {
-            color: #53cdfa;
+            color: rgb(155 155 151);
         }
 
         .live-indicator {
@@ -90,14 +98,14 @@
             align-items: center;
 
             text-align: center;
-            border-radius: 4px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
+            /* border-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.3); */
             padding: .2em;
         }
 
         .process {
             margin-bottom: 1em;
-            border-top: 1px dashed rgba(255, 255, 255, 0.3);
+            border-top: 2px solid rgba(255, 255, 255, 0.3);
             padding-top: .5em;
             padding-left: .5em;
         }
@@ -106,18 +114,14 @@
             font-size: 110%;
             display: flex;
             flex-wrap: wrap;
-            gap: .2em;
+            gap: .4em;
             padding-bottom: .5em;
         }
 
         .pid, .arg {
             padding: .2em;
-            border-radius: 4px;
-            border: 1px solid rgb(64, 64, 64);
-        }
-
-        .pid {
-            background: #373737;
+            background: #f2f2f2;
+            color: black;
         }
 
         .mem-stats .name {
@@ -125,18 +129,38 @@
             margin-right: .5em;
         }
 
-        .mem-stats.virt {
+        /* .mem-stats.virt {
             background-color: var(--virt-color);
         }
 
         .mem-stats.rss {
             background-color: var(--rss-color);
+        } */
+
+        .mem-stats .mem-square {
+            display: inline-block;
+            height: .8em;
+            width: .8em;
+            border-radius: 4px;
+            margin-right: .4em;
+        }
+
+        .mem-stats.virt .mem-square {
+            background-color: var(--virt-color);
+        }
+
+        .mem-stats.rss .mem-square {
+            background-color: var(--rss-color);
+        }
+
+        .mem-stats.virt .mem-square {
+            background-color: var(--virt-color);
         }
 
         .group-gap {
             text-align: center;
             font-size: 80%;
-            padding: .3em 0;
+            padding: .5em 0;
         }
 
         .group-outer {
@@ -167,23 +191,22 @@
             display: block;
             position: absolute;
             height: 100%;
-            border-radius: 1px;
-            border-left: 1px solid rgba(255, 255, 255, 0.5);
-
-            box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.3);
-
+            /* border-radius: 4px;
+            border: 1px solid rgb(220 220 220 / 50%); */
+            /* box-shadow: inset 0 0 25px rgb(0 0 0 / 35%); */
+            /* box-shadow: inset 0 0 10px rgb(255 255 255 / 35%); */
             font-style: normal;
             text-align: left;
             white-space: nowrap;
             text-overflow: ellipsis;
             overflow-x: hidden;
-            text-indent: .2em;
+            text-indent: 0.2em;
             line-height: 2;
         }
 
         i.Resident {
             background-color: var(--rss-color);
-            border-color: rgba(255, 255, 255, 0.5);
+            /* border-color: rgba(255, 255, 255, 0.5); */
         }
 
         i.NotResident {

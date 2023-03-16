@@ -1,59 +1,117 @@
 
-# mevi3
+# mevi
 
-A memory visualizer.
+A memory visualizer for Linux 5.7+
 
-## userfaultfd non-user-mode support (kernel faults)
+Made for this video: (FILL ME)
 
-Needs that sysctl to be switched to 1:
+## Prerequisite
+
+The `vm.unprivileged_userfaultfd` sysctl needs to be switched to 1:
 
 ```shell
 $ sudo sysctl -w vm.unprivileged_userfaultfd=1
 ```
 
-Alternatively, a bunch of apps still work without it, change
-`.user_mode_only(false)` to `true` in `mevi-preload`.
+Doing this effectively "softens" your system to some attacks, so only do this in
+a VM or if you're reckless, but also, it seems less awful than running mevi +
+tracees as root. (No, giving the `mevi` binary CAP_PTRACE isn't enough).
 
-## userfaultfd EVENT_FORK support
+You can _technically_ run a bunch of apps with only user faults, but some fairly
+basic stuff like `cat /hosts` will fail with EFAULT without it, so, I'm not
+making it easy to go that route - if you _really_ know what you're doing you can
+figure out where to pass the "user faults only" flag.
 
-You'd think `sudo setcap cap_sys_ptrace=ep target/release/mevi` would do the
-job, but no, since the uffd is initialized from child processes, which _do not_
-have `CAP_SYS_PTRACE`, so the only solution is to run stuff as root.
+## Usage
 
-## Running electron as root
-
-It fails to load GUI-related stuff unless you let your X server accept
-connections from other users apparently:
+Install the `mevi` executable:
 
 ```shell
-$ xhost + local:
+$ just install
 ```
 
-## strace notes
+(Or, without [just](https://github.com/casey/just), look into the `Justfile` for
+the cargo invocation)
 
-`mevi-preload` does this:
+Build & serve the frontend (you'll need [trunk](https://trunkrs.dev/)):
 
+```shell
+$ just serve
 ```
-userfaultfd(0)                          = 3
 
-ioctl(3, UFFDIO_API, {api=0xaa, features=UFFD_FEATURE_EVENT_REMAP|UFFD_FEATURE_EVENT_REMOVE|UFFD_FEATURE_EVENT_UNMAP => features=UFFD_FEATURE_PAGEFAULT_FLAG_WP|UFFD_FEATURE_EVENT_FORK|UFFD_FEATURE_EVENT_REMAP|UFFD_FEATURE_EVENT_REMOVE|UFFD_FEATURE_MISSING_HUGETLBFS|UFFD_FEATURE_MISSING_SHMEM|UFFD_FEATURE_EVENT_UNMAP|UFFD_FEATURE_SIGBUS|UFFD_FEATURE_THREAD_ID|UFFD_FEATURE_MINOR_HUGETLBFS|UFFD_FEATURE_MINOR_SHMEM|0x1800, ioctls=1<<_UFFDIO_REGISTER|1<<_UFFDIO_UNREGISTER|1<<_UFFDIO_API}) = 0
-ioctl(0x3, 0xc018aa3f, 0x7ffd5ac8d618)  = 0
+Open the frontend in your browser: <http://localhost:8080>
 
-socket(AF_UNIX, SOCK_STREAM|SOCK_CLOEXEC, 0) = 4
-socket(0x1, 0x80001, 0)                 = 0x4
+From another terminal, start the program you want to trace via mevi:
 
-connect(4, {sa_family=AF_UNIX, sun_path="/tmp/mevi.sock"}, 17) = 0
-connect(0x4, 0x7ffe63e7f5f8, 0x11)      = 0
-
-getpid()                                = 2970738
-getpid()                                = 0x2d53ff
-
-write(4, "\0\0\0\0\0-Tr", 8)            = 8
-write(0x4, 0x7ffe63e7f758, 0x8)         = 0x8
-
-sendmsg(4, {msg_name=NULL, msg_namelen=0, msg_iov=[{iov_base="\0\0\0\0", iov_len=4}], msg_iovlen=1, msg_control=[{cmsg_len=20, cmsg_level=SOL_SOCKET, cmsg_type=SCM_RIGHTS, cmsg_data=[3]}], msg_controllen=24, msg_flags=0}, 0) = 4
-sendmsg(0x4, 0x7ffe63e7f5a0, 0)         = 0x4
-
-close(4)                                = 0
-close(0x4)                              = 0
+```shell
+$ mevi PROGRAM ARGS
 ```
+
+The frontend should connect to `http://localhost:5001/stream`.
+
+If you're running this on a remote server, you'll need to forward both ports, with SSH for example:
+
+```shell
+ssh -L 5001:localhost:5001 -L 8080:localhost:8080 your-remote-host
+```
+
+## License
+
+This project is primarily distributed under the terms of both the MIT license
+and the Apache License (Version 2.0).
+
+See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
+
+## FAQ / Troubleshooting
+
+### I get `EPERM` at some point
+
+Did you skip past that `sysctl` note above?
+
+### The RSS numbers don't match up with htop/btop/procmaps etc.
+
+mevi only tracks private+anonymous memory mappings. The discrepancy probably
+comes from mapped files, and to a lesser extent, shared memory.
+
+### I have a tiny program and everything goes by way too fast.
+
+Try setting the environment variable `MEVI_BATCH_SIZE` to `1` or a similarly
+small value. By default mevi batches page-ins/page-outs quite a bit to avoid
+slowing down real-world programs too muc.
+
+### I have a multi-threaded program and it's all wrong
+
+Yeah, sorry about that. userfaultfd events don't have all the info we need, and
+ptrace observes events out-of-order, so the view of multi-threaded programs
+gets out-of-sync with the kernel.
+
+Also, sometimes traced threads/processes get stuck. Ctrl+Z + `fg` unsticks them,
+presumably because it sends `SIGCONT` to everything, which means I messed up
+something at the ptrace level, ah well.
+
+### Does this show backtraces?
+
+No, but you can do that in your fork.
+
+### Does this allow travelling back in time?
+
+No, but you can do that in your fork.
+
+### Does this have yet another, secret third feature?
+
+Clearly not, but again, you can do that in your fork. This is a research
+project, I will not be maintaining it beyond "have it run in its current form".
+
+If you want to spin this out into its own product, more power to you, but I'll
+have already moved on.
+
+### Why isn't this published on crates.io?
+
+It's not a library and it's not usable without the frontend anyway. One day
+stable cargo will let us build wasm artifacts and ship them with the resulting
+binary, but that day is not today.
+
+### Why isn't this using eBPF?
+
+I wanted to see how far I could take ptrace + userfaultfd. I'm interested in
+exploring eBPF later.
