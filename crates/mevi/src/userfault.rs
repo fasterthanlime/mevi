@@ -72,57 +72,36 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
         };
         tracing::debug!("{tid} got {event:?}");
         match event {
-            userfaultfd::Event::Pagefault {
-                addr, thread_id, ..
-            } => {
-                unsafe {
-                    loop {
-                        tracing::debug!(
-                            "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}...",
-                        );
-                        let res = uffd.zeropage(addr, page_size as _, true);
-                        tracing::debug!(
-                            "[{thread_id}] thread of {tid} zeropaging {addr:p} size {page_size:x?}... done! (res = {res:?})",
-                        );
-                        // eprintln!("trying to zeropage {addr:p}, size {page_size:x?}");
-                        match res {
-                            Ok(_) => {
-                                // cool!
-                                break;
-                            }
-                            Err(e) => match e {
-                                userfaultfd::Error::ZeropageFailed(errno) => {
-                                    match errno as i32 {
-                                        libc::EAGAIN => {
-                                            // this is actually fine, just try it again
-                                            // if num_tries > 5 {
-                                            //     panic!("[{thread_id}] thread of {tid} tried to zeropage {addr:p} {num_tries} times, giving up");
-                                            // }
+            userfaultfd::Event::Pagefault { addr, .. } => {
+                let res = unsafe { uffd.zeropage(addr, page_size as _, true) };
+                if let Err(e) = res {
+                    let errno = match e {
+                        userfaultfd::Error::ZeropageFailed(errno) => errno,
+                        _ => unreachable!(),
+                    };
 
-                                            // debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, continuing");
-                                            // continue;
+                    match errno as i32 {
+                        libc::EAGAIN => {
+                            // retrying often doesn't work, BUT this means the
+                            // thread wasn't awoken, so we need to do it by
+                            // hand.  worst case scenario we get another event
+                            // from the same range.
+                            debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
 
-                                            // maybe this isn't fine?
-                                            warn!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
-                                            uffd.wake(addr, page_size as _).unwrap();
-                                            break;
-                                        }
-                                        libc::EBADF => {
-                                            warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
-                                            return;
-                                        }
-                                        libc::ENOENT => {
-                                            // not sure if this is fine but let's not panic?
-                                            warn!("{tid} ENOENT while zeropaging {addr:?}");
-                                            break;
-                                        }
-                                        _ => {
-                                            panic!("{e}");
-                                        }
-                                    }
-                                }
-                                _ => unreachable!(),
-                            },
+                            uffd.wake(addr, page_size as _).unwrap();
+                            break;
+                        }
+                        libc::EBADF => {
+                            warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                            return;
+                        }
+                        libc::ENOENT => {
+                            // not sure if this is fine but let's not panic?
+                            warn!("{tid} ENOENT while zeropaging {addr:?}");
+                            continue;
+                        }
+                        _ => {
+                            panic!("{e}");
                         }
                     }
                 }
@@ -142,11 +121,6 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                     to,
                     make_format(BINARY)(len),
                 );
-
-                // send_ev(TraceePayload::Remap {
-                //     old_range: from..from + len,
-                //     new_range: to..to + len,
-                // });
             }
             userfaultfd::Event::Remove { start, end } => {
                 let start = start as usize;
@@ -158,8 +132,6 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                     start..end,
                     make_format(BINARY)(end - start),
                 );
-
-                // send_ev(TraceePayload::PageOut { range: start..end });
             }
             userfaultfd::Event::Unmap { start, end } => {
                 let start = start as usize;
@@ -171,7 +143,6 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                     start..end,
                     make_format(BINARY)(end - start),
                 );
-                // send_ev(TraceePayload::Unmap { range: start..end });
             }
             other => {
                 warn!("unhandled uffd event: {:?}", other);
