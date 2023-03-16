@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ops::Range};
 
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{FutureExt, StreamExt, TryStreamExt};
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
 use instant::{Duration, Instant};
@@ -87,13 +87,28 @@ fn app() -> Html {
 
                 spawn_local(async move {
                     let mut last_flush = Instant::now();
-                    // let mut batch_size = 0;
+                    let mut batch_size = 0;
                     let flush_every = Duration::from_millis(33);
 
-                    let (mut _write, mut read) = connect_to_ws().await.split();
+                    let (_, mut read) = connect_to_ws().await.split();
                     live.set(true);
 
-                    while let Some(msg) = read.next().await {
+                    loop {
+                        let (msg, waited) = {
+                            if let Some(msg) = read.next().now_or_never() {
+                                (msg, false)
+                            } else {
+                                (read.next().await, true)
+                            }
+                        };
+
+                        let msg = match msg {
+                            Some(msg) => msg,
+                            None => {
+                                break;
+                            }
+                        };
+
                         let msg = match msg {
                             Ok(msg) => msg,
                             Err(e) => {
@@ -101,7 +116,7 @@ fn app() -> Html {
                                 live.set(false);
 
                                 gloo_console::log!("Reconnecting...");
-                                (_write, read) = connect_to_ws().await.split();
+                                (_, read) = connect_to_ws().await.split();
                                 tracees_acc.clear();
                                 tracees.set(tracees_acc.clone());
                                 live.set(true);
@@ -113,22 +128,30 @@ fn app() -> Html {
                             Message::Text(t) => {
                                 // gloo_console::log!(format!("text message: {t}"));
                                 if t == "flush" && last_flush.elapsed() > flush_every {
+                                    gloo_console::log!(format!(
+                                        "flushing {} events (backend)",
+                                        batch_size
+                                    ));
                                     tracees.set(tracees_acc.clone());
                                     last_flush = Instant::now();
-                                    // batch_size = 0;
+                                    batch_size = 0;
                                 }
                             }
                             Message::Bytes(b) => {
                                 let ev = MeviEvent::deserialize(&b).unwrap();
-                                // gloo_console::log!(format!("{:?}", ev));
 
+                                // gloo_console::log!(format!("{:?}", ev));
                                 apply_ev(&mut tracees_acc, ev);
-                                // batch_size += 1;
-                                if last_flush.elapsed() > flush_every {
-                                    // gloo_console::log!(format!("flushing {} events", batch_size));
+                                batch_size += 1;
+
+                                if waited && last_flush.elapsed() > flush_every {
+                                    gloo_console::log!(format!(
+                                        "flushing {} events (waited + flush_every)",
+                                        batch_size
+                                    ));
                                     tracees.set(tracees_acc.clone());
                                     last_flush = Instant::now();
-                                    // batch_size = 0;
+                                    batch_size = 0;
                                 }
                             }
                         }
