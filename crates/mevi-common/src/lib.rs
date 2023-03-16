@@ -1,8 +1,4 @@
-use std::{
-    fmt,
-    ops::Range,
-    sync::{mpsc, Mutex},
-};
+use std::{fmt, ops::Range, sync::mpsc};
 
 use humansize::{make_format, BINARY};
 use rangemap::RangeMap;
@@ -106,7 +102,16 @@ pub enum ConnectSource {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MapGuard {
     #[serde(skip)]
-    pub _inner: Option<Mutex<mpsc::Sender<()>>>,
+    _inner: Option<mpsc::Sender<()>>,
+}
+
+// Safety: the non-Sync `mpsc::Sender` inside of `MapGuard` is never accessed.
+unsafe impl Sync for MapGuard {}
+
+impl MapGuard {
+    pub fn new(tx: mpsc::Sender<()>) -> Self {
+        Self { _inner: Some(tx) }
+    }
 }
 
 impl Clone for MapGuard {
@@ -119,6 +124,9 @@ impl TraceePayload {
     pub fn apply_to_memmap(&self, map: &mut MemMap) {
         match self {
             TraceePayload::Map { range, state, .. } => {
+                if range.start >= range.end {
+                    panic!("map range is invalid: {range:x?}");
+                }
                 map.insert(range.clone(), *state);
             }
             TraceePayload::Connected { .. } => {
@@ -129,12 +137,21 @@ impl TraceePayload {
                 map.clear();
             }
             TraceePayload::PageIn { range } => {
+                if range.start >= range.end {
+                    panic!("pagein range is invalid: {range:x?}");
+                }
                 map.insert(range.clone(), MemState::Resident);
             }
             TraceePayload::PageOut { range } => {
+                if range.start >= range.end {
+                    panic!("pageout range is invalid: {range:x?}");
+                }
                 map.insert(range.clone(), MemState::NotResident);
             }
             TraceePayload::Unmap { range } => {
+                if range.start >= range.end {
+                    panic!("unmap range is invalid: {range:x?}");
+                }
                 map.remove(range.clone());
             }
             TraceePayload::Remap {
@@ -207,9 +224,7 @@ impl TraceePayload {
                             subrange_new.end = new_range.end;
                         }
 
-                        if subrange_new.start == subrange_new.end {
-                            // this can happen if we shrunk, just ignore that update
-                        } else {
+                        if subrange_new.start < subrange_new.end {
                             tracing::debug!(
                                 "remap: {:x?} ({}) => {:x?} ({}) = {:?}",
                                 subrange_old,
@@ -219,6 +234,8 @@ impl TraceePayload {
                                 old_state
                             );
                             merge_state.insert(subrange_new, *old_state);
+                        } else {
+                            // this can happen if we shrunk, just ignore that update
                         }
                     }
 
@@ -233,6 +250,9 @@ impl TraceePayload {
             }
             TraceePayload::Batch { batch } => {
                 for (range, mem_state) in batch.iter() {
+                    if range.start >= range.end {
+                        panic!("batched range is invalid: {range:x?}");
+                    }
                     map.insert(range.clone(), *mem_state);
                 }
             }

@@ -88,7 +88,7 @@ struct TraceeState {
 impl TraceeState {
     fn send_ev(&mut self, payload: TraceePayload) {
         let ev = MeviEvent::TraceeEvent(self.tid, payload);
-        _ = self.w_tx.blocking_send(ev.clone());
+        _ = self.w_tx.blocking_send(ev);
     }
 
     fn flush(&mut self) {
@@ -166,6 +166,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
             } else {
                 // didn't get an event in `interval`, block until we get one,
                 // but first, flush all batches
+                tracing::info!("flushing all batches");
                 for tracee in tracees.values_mut() {
                     tracee.flush();
                 }
@@ -296,18 +297,20 @@ async fn stream(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> imp
 }
 
 async fn handle_ws(mut payload_rx: broadcast::Receiver<MeviEvent>, mut ws: WebSocket) {
-    let interval = Duration::from_millis(16);
+    // let interval = Duration::from_millis(16);
+    let interval = Duration::from_millis(32);
     let mut next_flush = Instant::now() + interval;
     let mut queue = vec![];
 
     loop {
-        let ev = match tokio::time::timeout_at(next_flush, payload_rx.recv()).await {
+        match tokio::time::timeout_at(next_flush, payload_rx.recv()).await {
             Ok(ev) => {
                 let ev = ev.unwrap();
                 queue.push(ev);
             }
             Err(_elapsed) => {
                 if !queue.is_empty() {
+                    tracing::info!("flushing {}", queue.len());
                     ws.send(Message::Binary(
                         mevi_common::serialize_many(&queue[..]).unwrap(),
                     ))

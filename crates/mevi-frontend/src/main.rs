@@ -1,9 +1,8 @@
 use std::{collections::HashMap, ops::Range};
 
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
-use instant::{Duration, Instant};
 use itertools::Itertools;
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload};
 use wasm_bindgen_futures::spawn_local;
@@ -86,29 +85,12 @@ fn app() -> Html {
                 let mut tracees_acc = HashMap::new();
 
                 spawn_local(async move {
-                    let mut last_flush = Instant::now();
                     let mut batch_size = 0;
-                    let flush_every = Duration::from_millis(33);
 
                     let (_, mut read) = connect_to_ws().await.split();
                     live.set(true);
 
-                    loop {
-                        let (msg, waited) = {
-                            if let Some(msg) = read.next().now_or_never() {
-                                (msg, false)
-                            } else {
-                                (read.next().await, true)
-                            }
-                        };
-
-                        let msg = match msg {
-                            Some(msg) => msg,
-                            None => {
-                                break;
-                            }
-                        };
-
+                    while let Some(msg) = read.next().await {
                         let msg = match msg {
                             Ok(msg) => msg,
                             Err(e) => {
@@ -126,16 +108,7 @@ fn app() -> Html {
                         live.set(true);
                         match msg {
                             Message::Text(t) => {
-                                // gloo_console::log!(format!("text message: {t}"));
-                                if t == "flush" && last_flush.elapsed() > flush_every {
-                                    gloo_console::log!(format!(
-                                        "flushing {} events (backend)",
-                                        batch_size
-                                    ));
-                                    tracees.set(tracees_acc.clone());
-                                    last_flush = Instant::now();
-                                    batch_size = 0;
-                                }
+                                gloo_console::log!(format!("text message: {t}"));
                             }
                             Message::Bytes(b) => {
                                 let evs = mevi_common::deserialize_many(&b).unwrap();
@@ -146,15 +119,9 @@ fn app() -> Html {
                                     apply_ev(&mut tracees_acc, ev);
                                 }
 
-                                if waited && last_flush.elapsed() > flush_every {
-                                    gloo_console::log!(format!(
-                                        "flushing {} events (waited + flush_every)",
-                                        batch_size
-                                    ));
-                                    tracees.set(tracees_acc.clone());
-                                    last_flush = Instant::now();
-                                    batch_size = 0;
-                                }
+                                tracees.set(tracees_acc.clone());
+                                gloo_console::log!(format!("flushing {} events", batch_size));
+                                batch_size = 0;
                             }
                         }
                     }
@@ -219,8 +186,7 @@ fn app() -> Html {
                                 </div>
                                 {{
                                     let map = &tracee.map;
-                                    // let has_any_memory_resident = map.iter().any(|(_, state)| *state == MemState::Resident);
-                                    let has_any_memory_resident = true;
+                                    let has_any_memory_resident = map.iter().any(|(_, state)| *state == MemState::Resident);
                                     if !has_any_memory_resident {
                                         return html!{ };
                                     }
@@ -261,6 +227,11 @@ fn app() -> Html {
                                     let mut last_group_end: Option<u64> = None;
                                     for group in groups {
                                         let mut group_markup = vec![];
+
+                                        let has_any_memory_resident = group.ranges.iter().any(|(_, state)| *state == MemState::Resident);
+                                        if !has_any_memory_resident {
+                                            continue;
+                                        }
 
                                         let mut max_bytes: u64 = 16 * 1024;
                                         while max_bytes < group.size {

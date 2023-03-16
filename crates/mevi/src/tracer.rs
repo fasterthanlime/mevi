@@ -172,7 +172,7 @@ impl Tracer {
                                         TraceePayload::Map {
                                             range,
                                             state,
-                                            _guard: MapGuard { _inner: Some(tx) },
+                                            _guard: MapGuard::new(tx),
                                         },
                                     );
                                     self.tx.send(ev).unwrap();
@@ -188,7 +188,7 @@ impl Tracer {
                                         TraceePayload::Remap {
                                             old_range,
                                             new_range,
-                                            _guard: MapGuard { _inner: Some(tx) },
+                                            _guard: MapGuard::new(tx),
                                         },
                                     );
                                     self.tx.send(ev).unwrap();
@@ -345,19 +345,22 @@ impl Tracee {
                     && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
                     && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
                 {
-                    let range = ret..ret + len;
-                    debug!("{} thread of {for_tid} just did mmap {range:x?} addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd} ret={ret:x?}", self.tid);
-                    return Ok(Some(MemoryEvent {
-                        for_tid,
-                        change: MemoryChange::Map {
-                            range,
-                            state: if map_flags.contains(MapFlags::MAP_POPULATE) {
-                                MemState::Resident
-                            } else {
-                                MemState::NotResident
+                    let start = ret;
+                    if let Some(end) = ret.checked_add(len) {
+                        let range = start..end;
+                        debug!("{} thread of {for_tid} just did mmap {range:x?} addr_in={addr_in:x?} len={len:x?} prot=({prot_flags:?}) flags=({map_flags:?}) fd={fd} ret={ret:x?}", self.tid);
+                        return Ok(Some(MemoryEvent {
+                            for_tid,
+                            change: MemoryChange::Map {
+                                range,
+                                state: if map_flags.contains(MapFlags::MAP_POPULATE) {
+                                    MemState::Resident
+                                } else {
+                                    MemState::NotResident
+                                },
                             },
-                        },
-                    }));
+                        }));
+                    }
                 }
             }
             libc::SYS_mremap => {

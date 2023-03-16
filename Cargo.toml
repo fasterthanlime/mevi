@@ -8,4 +8,4 @@ userfaultfd = { git = "https://github.com/fasterthanlime/userfaultfd-rs", branch
 postcard = { version = "1.0.0", features = ["alloc"] }
 
 [profile.release]
-debug = 1
+debug = 2
