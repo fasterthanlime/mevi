@@ -206,7 +206,7 @@ fn app() -> Html {
                                         while max_bytes < group.size {
                                             max_bytes *= 2;
                                         }
-                                        let scale_ratio = 1.0 / (max_bytes as f64 * 100.0);
+                                        let scale_ratio = 100.0 / (max_bytes as f64);
                                         let min_size_for_print = max_bytes / 16;
 
                                         for (range, mem_state) in group.ranges {
@@ -265,7 +265,7 @@ fn app() -> Html {
                                                                 { format!("{:x}", group.start) }
                                                             </span>
                                                             <span class="scale">
-                                                                { format!("{} scale", formatter(max_mb)) }
+                                                                { format!("{} scale", formatter(max_bytes)) }
                                                             </span>
                                                         </div>
                                                         <div class="group">

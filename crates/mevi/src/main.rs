@@ -261,7 +261,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Vec
                 _guard,
             } => {
                 let formatter = make_format(BINARY);
-                warn!(
+                debug!(
                     "remap: ({}) {old_range:x?} => ({}) {new_range:x?}",
                     formatter(old_range.end - old_range.start),
                     formatter(new_range.end - new_range.start),
