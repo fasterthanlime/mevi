@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, ops::Range};
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use gloo_net::websocket::{futures::WebSocket, Message};
 use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload};
@@ -20,25 +20,74 @@ struct TraceeState {
     cmdline: Vec<String>,
 }
 
+async fn connect_to_ws() -> WebSocket {
+    let addr = "ws://localhost:5001/stream";
+    gloo_console::log!("Connecting to", addr);
+    let mut ws = WebSocket::open(addr).unwrap();
+
+    let mut counter = 0;
+    loop {
+        counter += 1;
+        gloo_timers::future::sleep(std::time::Duration::from_millis(100)).await;
+        match ws.state() {
+            gloo_net::websocket::State::Connecting => {
+                if counter > 20 {
+                    ws.close(None, None).unwrap();
+                    ws = WebSocket::open(addr).unwrap();
+                    counter = 0;
+                }
+            }
+            gloo_net::websocket::State::Open => {
+                gloo_console::log!("Connected!");
+                break;
+            }
+            gloo_net::websocket::State::Closing => {
+                gloo_console::log!("Closing...");
+                panic!("Closing");
+            }
+            gloo_net::websocket::State::Closed => {
+                gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+                ws = WebSocket::open(addr).unwrap();
+                counter = 0;
+            }
+        }
+    }
+
+    ws
+}
+
 #[function_component(App)]
 fn app() -> Html {
+    let live = use_state(|| false);
     let tracees = use_state(|| -> HashMap<TraceeId, TraceeState> { Default::default() });
 
     {
         let tracees = tracees.clone();
+        let live = live.clone();
         use_effect_with_deps(
             move |_| {
                 let mut tracees_acc = HashMap::new();
 
-                gloo_console::log!("Connecting to WebSocket...");
-                let ws = WebSocket::open("ws://localhost:5001/stream").unwrap();
-                gloo_console::log!("Connected to WebSocket");
-                let (write, mut read) = ws.split();
-                drop(write);
-
                 spawn_local(async move {
+                    let (mut write, mut read) = connect_to_ws().await.split();
+                    live.set(true);
+
                     while let Some(msg) = read.next().await {
-                        let msg = msg.unwrap();
+                        let msg = match msg {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                gloo_console::log!("Websocket error:", e.to_string());
+                                live.set(false);
+
+                                gloo_console::log!("Reconnecting...");
+                                (write, read) = connect_to_ws().await.split();
+                                tracees_acc.clear();
+                                tracees.set(tracees_acc.clone());
+                                live.set(true);
+                                continue;
+                            }
+                        };
+                        live.set(true);
                         match msg {
                             Message::Text(t) => {
                                 gloo_console::log!(format!("text message: {t}"))
@@ -75,6 +124,7 @@ fn app() -> Html {
             <div class="mem-stats-container">
                 <span class="mem-stats virt"><span class="name">{"Virtual"}</span>{format!("{}", formatter(total_virt))}</span>
                 <span class="mem-stats rss"><span class="name">{"Resident"}</span>{format!("{}", formatter(total_res))}</span>
+                <span class="live">{ if *live { "LIVE" } else { "OFFLINE" } }</span>
             </div>
             {{
                 tracees.values().map(|tracee| {
