@@ -124,7 +124,7 @@ impl Tracer {
                 WaitStatus::Stopped(pid, sig) => {
                     let tid: TraceeId = pid.into();
                     match sig {
-                        Signal::SIGWINCH => {
+                        Signal::SIGWINCH | Signal::SIGSTOP => {
                             // don't show those, they're spammy
                         }
                         _ => {
@@ -138,12 +138,7 @@ impl Tracer {
                             ptrace::syscall(pid, None)?;
                         }
                         Signal::SIGSTOP => {
-                            // probably a process freshly cloned or forked, let's see
-                            if let Some(_tracee) = self.tracees.get(&tid) {
-                                // yeah it's that
-                            } else {
-                                info!("{tid} just got SIGSTOP from a task we didn't know about");
-                            }
+                            // probably a process freshly cloned or forked
                             ptrace::syscall(pid, None)?;
                         }
                         _ => {
@@ -365,10 +360,13 @@ impl Tracee {
         if matches!(self.kind, TraceeKind::Unknown) {
             match regs.orig_rax as _ {
                 libc::SYS_rseq | libc::SYS_set_robust_list | libc::SYS_rt_sigprocmask => {
-                    // these all happen super early, seems lke a bad idea? idk
+                    // these all happen super early, seems like a bad idea? idk
                 }
                 libc::SYS_execve => {
                     // bad idea, we're about to replace all memory mappings anyway
+                }
+                libc::SYS_gettid => {
+                    // at this point ptrace hasn't let us know about this process yet
                 }
                 syscall_nr => {
                     debug!(
@@ -616,23 +614,9 @@ impl Tracee {
 
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
         if real_pid != tid {
-            tracing::error!("{tid} is a thread of {real_pid}, we should already know about it");
-
-            let cmdline = crate::get_cmdline(tid);
-            tracing::error!("{tid} cmdline: {cmdline:?}");
-            tracing::error!(
-                "{tid} stat: {}",
-                std::fs::read_to_string(format!("/proc/{}/stat", tid))?
-            );
-
-            let cmdline = crate::get_cmdline(real_pid);
-            tracing::error!("{real_pid} cmdline: {cmdline:?}");
-            tracing::error!(
-                "{real_pid} stat: {}",
-                std::fs::read_to_string(format!("/proc/{}/stat", real_pid))?
-            );
-
-            panic!("unknown {real_pid} => {tid} relationship");
+            tracing::warn!("{tid} is a thread of {real_pid}, waiting for ptrace to tell us about it (connecting on syscall {})", saved_regs.orig_rax);
+            ptrace::setregs(pid, saved_regs)?;
+            return Ok(());
         }
 
         debug!("allocate staging area");
