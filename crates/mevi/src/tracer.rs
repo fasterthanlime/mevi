@@ -15,7 +15,7 @@ use nix::{
         signal::Signal,
         wait::{waitpid, WaitStatus},
     },
-    unistd::Pid,
+    unistd::{Pid, SysconfVar},
 };
 use procfs::process::{MMPermissions, MMapPath};
 use tracing::{debug, info, trace, warn};
@@ -311,6 +311,20 @@ impl Tracer {
                                     "{child_tid} has stuff at {range:x?} with perms {:?}",
                                     map.perms
                                 );
+
+                                let page_size =
+                                    nix::unistd::sysconf(SysconfVar::PAGE_SIZE)?.unwrap() as u64;
+                                let start_idx = (map.address.0 / page_size) as usize;
+                                let end_idx = (map.address.1 / page_size) as usize;
+                                let mut pm = p.pagemap()?;
+                                for (rel_idx, pi) in pm
+                                    .get_range_info(start_idx..end_idx)?
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    let addr = map.address.0 + rel_idx as u64 * page_size;
+                                    info!("{child_tid} {addr:x?} = {pi:?}",);
+                                }
                             }
                         }
                         libc::PTRACE_EVENT_VFORK => {
@@ -409,20 +423,11 @@ impl Tracee {
 
         if matches!(self.kind, TraceeKind::Unknown) {
             match regs.orig_rax as _ {
-                libc::SYS_rseq | libc::SYS_set_robust_list | libc::SYS_rt_sigprocmask => {
-                    // these all happen super early, seems like a bad idea? idk
-                }
                 libc::SYS_execve => {
                     // bad idea, we're about to replace all memory mappings anyway
                 }
-                libc::SYS_gettid => {
-                    // at this point ptrace hasn't let us know about this process yet
-                }
                 syscall_nr => {
-                    debug!(
-                        "{} connecting as syscall {syscall_nr} is returning",
-                        self.tid
-                    );
+                    info!("{} connecting out of syscall nr. {syscall_nr}", self.tid);
                     if let Err(e) = self.connect(regs) {
                         if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
                             if nix_err == &nix::Error::ESRCH {
@@ -871,6 +876,11 @@ impl Tracee {
         // now close the uffd
         let ret = invoke(libc::SYS_close, &[raw_uffd as _])?;
         debug!("close(uffd) returned {ret}");
+
+        // TODO: we should probably keep a copy of the uffd for ourselves,
+        // right? we know exactly when processes will connect to it, and it'd
+        // be really neat to register ranges _while the process is paused_ as
+        // opposed to some other time when the main thread finally gets to it.
 
         // now free the staging area
         let ret = invoke(libc::SYS_munmap, &[staging_area as _, 0x1000])?;
