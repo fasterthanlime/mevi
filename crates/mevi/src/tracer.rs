@@ -1,6 +1,5 @@
 use std::{
-    borrow::Cow, collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command,
-    sync::mpsc,
+    collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc,
 };
 
 use color_eyre::Result;
@@ -83,7 +82,9 @@ impl Tracer {
             ptrace::Options::PTRACE_O_TRACESYSGOOD
                 | ptrace::Options::PTRACE_O_TRACECLONE
                 | ptrace::Options::PTRACE_O_TRACEFORK
-                | ptrace::Options::PTRACE_O_TRACEVFORK,
+                | ptrace::Options::PTRACE_O_TRACEVFORK
+                | ptrace::Options::PTRACE_O_TRACEEXEC
+                | ptrace::Options::PTRACE_O_EXITKILL,
         )?;
         ptrace::syscall(pid, None)?;
 
@@ -111,15 +112,27 @@ impl Tracer {
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
                     let tid: TraceeId = pid.into();
-                    info!("{tid} caught sig {sig}");
+                    match sig {
+                        Signal::SIGWINCH => {
+                            // don't show those, they're spammy
+                        }
+                        _ => {
+                            info!("{tid} caught sig {sig}");
+                        }
+                    }
+
                     match sig {
                         Signal::SIGTRAP => {
                             // probably ptrace stuff?
                             ptrace::syscall(pid, None)?;
                         }
                         Signal::SIGSTOP => {
-                            // probably a new thread after clone?
-                            info!("{tid} is that a new thread? (just got SIGSTOP)");
+                            // probably a process freshly cloned or forked, let's see
+                            if let Some(_tracee) = self.tracees.get(&tid) {
+                                // yeah it's that
+                            } else {
+                                info!("{tid} just got SIGSTOP from a task we didn't know about");
+                            }
                             ptrace::syscall(pid, None)?;
                         }
                         _ => {
@@ -151,9 +164,7 @@ impl Tracer {
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
 
-                        if let Some(MemoryEvent { for_tid, change }) =
-                            tracee.on_sys_exit(&mut self.tx)?
-                        {
+                        if let Some(MemoryEvent { for_tid, change }) = tracee.on_sys_exit()? {
                             if matches!(tracee.kind, TraceeKind::Unknown) {
                                 warn!(
                                     "{} unknown tracee kind, and Mapped, assuming process",
@@ -237,15 +248,63 @@ impl Tracer {
                 }
                 WaitStatus::PtraceEvent(pid, sig, event) => {
                     let tid: TraceeId = pid.into();
-                    let event_name: Cow<'static, str> = match event {
-                        libc::PTRACE_EVENT_CLONE => "clone".into(),
-                        libc::PTRACE_EVENT_FORK => "fork".into(),
-                        libc::PTRACE_EVENT_VFORK => "vfork".into(),
-                        other => format!("unknown event {}", other).into(),
-                    };
+                    let child_tid = TraceeId(ptrace::getevent(pid)? as _);
 
-                    let ev = ptrace::getevent(pid)?;
-                    info!("{tid} got event {event_name} with sig {sig}, ev = {ev}");
+                    match event {
+                        libc::PTRACE_EVENT_FORK => {
+                            info!("{tid} forked into {child_tid} (with {sig})");
+                            self.tracees.insert(
+                                child_tid,
+                                Tracee {
+                                    was_in_syscall: false,
+                                    tid: child_tid,
+                                    kind: TraceeKind::Unknown {},
+                                },
+                            );
+                        }
+                        libc::PTRACE_EVENT_VFORK => {
+                            info!("{tid} vforked into {child_tid} (with {sig})");
+                            self.tracees.insert(
+                                child_tid,
+                                Tracee {
+                                    was_in_syscall: false,
+                                    tid: child_tid,
+                                    kind: TraceeKind::Unknown {},
+                                },
+                            );
+                        }
+                        libc::PTRACE_EVENT_CLONE => {
+                            info!("{tid} cloned into {child_tid} (with {sig})");
+                            self.tracees.insert(
+                                child_tid,
+                                Tracee {
+                                    was_in_syscall: false,
+                                    tid: child_tid,
+                                    kind: TraceeKind::ThreadOf { pid: tid },
+                                },
+                            );
+                        }
+                        libc::PTRACE_EVENT_EXEC => {
+                            info!("{tid} exec'd with sig {sig}, child_tid = {child_tid}");
+                            let tracee = match self.tracees.get_mut(&tid) {
+                                Some(t) => t,
+                                None => {
+                                    panic!("{tid} exec'd, but we didn't know about that process");
+                                }
+                            };
+                            tracee.kind = TraceeKind::Unknown;
+                            self.tx
+                                .send(MeviEvent::TraceeEvent(tid, TraceePayload::Exec))
+                                .unwrap();
+                        }
+                        _ => {
+                            info!(
+                                "{tid} got event {event} with sig {sig}, child_tid = {child_tid}"
+                            );
+                            // do nothing
+                        }
+                    }
+
                     ptrace::syscall(pid, None)?;
                 }
                 WaitStatus::Signaled(pid, signal, core_dump) => {
@@ -279,7 +338,7 @@ enum TraceeKind {
 }
 
 impl Tracee {
-    fn on_sys_exit(&mut self, tx: &mut mpsc::SyncSender<MeviEvent>) -> Result<Option<MemoryEvent>> {
+    fn on_sys_exit(&mut self) -> Result<Option<MemoryEvent>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax;
@@ -321,16 +380,6 @@ impl Tracee {
         };
 
         match regs.orig_rax as i64 {
-            libc::SYS_execve | libc::SYS_execveat => {
-                info!("{} will execve, resetting", self.tid);
-
-                // TODO: remember that we execv'd, at this point
-                self.kind = TraceeKind::Unknown;
-                tx.send(MeviEvent::TraceeEvent(for_tid, TraceePayload::Execve))
-                    .unwrap();
-
-                return Ok(None);
-            }
             libc::SYS_mmap => {
                 let addr_in = regs.rdi;
                 let len = regs.rsi;
@@ -547,12 +596,8 @@ impl Tracee {
         };
 
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
-
         if real_pid != tid {
-            debug!("{tid} is a thread of {real_pid}");
-            self.kind = TraceeKind::ThreadOf { pid: real_pid };
-            ptrace::setregs(pid, saved_regs)?;
-            return Ok(());
+            panic!("{tid} is a thread of {real_pid}, that should never happen");
         }
 
         debug!("allocate staging area");

@@ -1839,7 +1839,7 @@ dependencies = [
 [[package]]
 name = "userfaultfd"
 version = "0.5.0"
-source = "git+https://github.com/fasterthanlime/userfaultfd-rs?branch=expose-raw#e9160a896f7d8d80c8b0943480885598bd698d06"
+source = "git+https://github.com/fasterthanlime/userfaultfd-rs?rev=e9160a896f7d8d80c8b0943480885598bd698d0#e9160a896f7d8d80c8b0943480885598bd698d06"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -1852,7 +1852,7 @@ dependencies = [
 [[package]]
 name = "userfaultfd-sys"
 version = "0.4.2"
-source = "git+https://github.com/fasterthanlime/userfaultfd-rs?branch=expose-raw#e9160a896f7d8d80c8b0943480885598bd698d06"
+source = "git+https://github.com/fasterthanlime/userfaultfd-rs?rev=e9160a896f7d8d80c8b0943480885598bd698d0#e9160a896f7d8d80c8b0943480885598bd698d06"
 dependencies = [
  "bindgen",
  "cc",

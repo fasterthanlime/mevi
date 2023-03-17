@@ -182,7 +182,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
                     );
                 }
             }
-            TraceePayload::Execve => {
+            TraceePayload::Exec => {
                 debug!("{} just execve'd, clearing uffd", tracee.tid);
                 tracee.uffd = None;
                 // map is cleared by apply_to_memmap

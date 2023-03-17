@@ -70,7 +70,7 @@ pub enum TraceePayload {
         source: ConnectSource,
         uffd: u64,
     },
-    Execve,
+    Exec,
     MemStateChange {
         range: Range<u64>,
         state: MemState,
@@ -124,7 +124,7 @@ impl TraceePayload {
             TraceePayload::Connected { .. } => {
                 // do nothing
             }
-            TraceePayload::Execve => {
+            TraceePayload::Exec => {
                 // all the mappings are invalidated on exec
                 map.clear();
             }
