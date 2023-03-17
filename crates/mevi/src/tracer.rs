@@ -190,6 +190,11 @@ impl Tracer {
 
                             match change {
                                 MemoryChange::Map { range, mut state } => {
+                                    let formatter = make_format(BINARY);
+                                    info!(
+                                        "{tid} => {for_tid} mapping {range:x?} ({}) with {state:?}",
+                                        formatter(range.end - range.start)
+                                    );
                                     let target = self.tracees.get(&for_tid).unwrap();
                                     match &target.kind {
                                         TraceeKind::Fresh => unreachable!(),
@@ -893,14 +898,32 @@ impl Tracee {
 
         // TODO: get break start from `/proc/:pid/stat` field 47 instead?
         // cf. https://man7.org/linux/man-pages/man5/proc.5.html
-        let ret = invoke(libc::SYS_brk, &[0])?;
-        debug!("brk(0) returned {ret}");
+        let end_brk = invoke(libc::SYS_brk, &[0])?;
+        debug!("brk(0) returned {end_brk}");
 
         // at this point we should've received the uffd from the other thread.
         let uffd = accept_jh.join().unwrap();
 
         // now's a good time to register all the ranges that are R+W, private and anonymous.
         let p = procfs::process::Process::new(tid.0 as _)?;
+        if let Some(start_brk) = p.stat()?.start_brk {
+            if end_brk > start_brk {
+                // FIXME: only accept EBUSY
+                _ = uffd.register(start_brk as _, (end_brk - start_brk) as _);
+
+                let formatter = make_format(BINARY);
+                tracing::info!(
+                    "{tid} at connect time, heap was {:x?}, which is {}",
+                    start_brk..end_brk,
+                    formatter(end_brk - start_brk),
+                );
+            } else {
+                tracing::info!(
+                    "{tid} at connect time, heap was odd (start_brk={start_brk:x?}, end_brk={end_brk:x?})"
+                );
+            }
+        }
+
         let maps = p.maps()?;
         for map in maps {
             if !map
@@ -939,6 +962,15 @@ impl Tracee {
             let range = map.address.0..map.address.1;
             info!("{tid} has stuff at {range:x?} with perms {:?}", map.perms);
 
+            tx.send(MeviEvent::TraceeEvent(
+                tid,
+                TraceePayload::MemStateChange {
+                    range: range.clone(),
+                    state: MemState::Untracked,
+                },
+            ))
+            .unwrap();
+
             if let Err(e) = uffd.register(
                 range.start as _,
                 (range.end.checked_sub(range.start).unwrap()) as _,
@@ -957,6 +989,9 @@ impl Tracee {
                 }
             }
 
+            let mut num_pages = 0;
+            let mut num_present_pages = 0;
+
             let page_size = nix::unistd::sysconf(SysconfVar::PAGE_SIZE)?.unwrap() as u64;
             let start_idx = (map.address.0 / page_size) as usize;
             let end_idx = (map.address.1 / page_size) as usize;
@@ -968,7 +1003,11 @@ impl Tracee {
             {
                 let addr = map.address.0 + rel_idx as u64 * page_size;
                 if let PageInfo::MemoryPage(mp) = pi {
-                    info!("{tid} {addr:x?} = {pi:?}",);
+                    tracing::debug!("{tid} {addr:x?} = {pi:?}",);
+                    num_pages += 1;
+                    if mp.contains(MemoryPageFlags::PRESENT) {
+                        num_present_pages += 1;
+                    }
 
                     // TODO: we can do a lot fewer events here by coalescing those
                     // ranges but let's worry about that later
@@ -984,8 +1023,14 @@ impl Tracee {
                         },
                     ))
                     .unwrap();
+                } else {
+                    panic!("expected a MemoryPage PageInfo");
                 }
             }
+
+            tracing::info!(
+                "{tid} that range had {num_present_pages} present pages out of {num_pages}"
+            );
         }
 
         // retrieve the cmdline and send it
@@ -997,7 +1042,7 @@ impl Tracee {
         ))?;
 
         self.kind = TraceeKind::Process {
-            heap_range: ret..ret,
+            heap_range: end_brk..end_brk,
             uffd,
         };
         ptrace::setregs(pid, saved_regs)?;
