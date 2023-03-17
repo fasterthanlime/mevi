@@ -53,6 +53,15 @@ enum MemoryChange {
 
 impl Tracer {
     fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
+        // set ourselves as the child subreaper
+        let errno = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+        if errno < 0 {
+            panic!(
+                "while setting ourselves as the child subreaper: {}",
+                nix::Error::from_i32(errno)
+            );
+        }
+
         let mut args = std::env::args();
         // skip our own name
         args.next().unwrap();
@@ -603,7 +612,7 @@ impl Tracee {
 
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
         if real_pid != tid {
-            panic!("{tid} is a thread of {real_pid}, that should never happen");
+            panic!("{tid} is a thread/child of {real_pid}, that should never happen");
         }
 
         debug!("allocate staging area");
