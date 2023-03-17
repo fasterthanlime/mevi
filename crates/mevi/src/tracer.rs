@@ -14,7 +14,7 @@ use std::{
 use color_eyre::Result;
 use humansize::{make_format, BINARY};
 use libc::{sockaddr_un, user_regs_struct};
-use mevi_common::{MapGuard, MemState, MeviEvent, TraceeId, TraceePayload};
+use mevi_common::{MemState, MeviEvent, TraceeId, TraceePayload};
 use nix::{
     errno::Errno,
     sys::{
@@ -172,7 +172,7 @@ impl Tracer {
                     let tracee = self.tracees.entry(tid).or_insert_with(|| Tracee {
                         was_in_syscall: false,
                         tid,
-                        kind: TraceeKind::Unknown,
+                        kind: TraceeKind::Fresh,
                     });
 
                     if tracee.was_in_syscall {
@@ -181,7 +181,7 @@ impl Tracer {
                         if let Some(MemoryEvent { for_tid, change }) =
                             tracee.on_sys_exit(&self.tx, &self.listener)?
                         {
-                            if matches!(tracee.kind, TraceeKind::Unknown) {
+                            if matches!(tracee.kind, TraceeKind::Fresh) {
                                 warn!(
                                     "{} unknown tracee kind, and Mapped, assuming process",
                                     tracee.tid
@@ -190,40 +190,51 @@ impl Tracer {
 
                             match change {
                                 MemoryChange::Map { range, state } => {
-                                    let (tx, rx) = mpsc::channel();
+                                    let target = self.tracees.get(&for_tid).unwrap();
+                                    match &target.kind {
+                                        TraceeKind::Fresh => unreachable!(),
+                                        TraceeKind::Process { uffd, .. } => {
+                                            uffd.register(
+                                                range.start as _,
+                                                (range.end - range.start) as _,
+                                            )?;
+                                        }
+                                        TraceeKind::Thread { .. } => {
+                                            panic!("thread of a process should not be able to map memory");
+                                        }
+                                    }
+
                                     let ev = MeviEvent::TraceeEvent(
                                         for_tid,
-                                        TraceePayload::Map {
-                                            range,
-                                            state,
-                                            _guard: MapGuard::new(tx),
-                                        },
+                                        TraceePayload::MemStateChange { range, state },
                                     );
-                                    self.tx.send(ev).unwrap();
-                                    _ = rx.recv(); // wait for event to be processed
+                                    self.tx.send(ev)?;
                                 }
                                 MemoryChange::Remap {
                                     old_range,
                                     new_range,
                                 } => {
-                                    let (tx, rx) = mpsc::channel();
+                                    // note: uffd follows remaps, we don't need to
+                                    // unregister or re-register anything
+
                                     let ev = MeviEvent::TraceeEvent(
                                         for_tid,
                                         TraceePayload::Remap {
                                             old_range,
                                             new_range,
-                                            _guard: MapGuard::new(tx),
                                         },
                                     );
-                                    self.tx.send(ev).unwrap();
-                                    _ = rx.recv(); // wait for event to be processed
+                                    self.tx.send(ev)?;
                                 }
                                 MemoryChange::Unmap { range } => {
+                                    // note: uffd follows unmaps, we don't need
+                                    // to unregister anything.
+
                                     let ev = MeviEvent::TraceeEvent(
                                         for_tid,
                                         TraceePayload::Unmap { range },
                                     );
-                                    self.tx.send(ev).unwrap();
+                                    self.tx.send(ev)?;
                                 }
                                 MemoryChange::PageOut { range } => {
                                     let ev = MeviEvent::TraceeEvent(
@@ -274,7 +285,7 @@ impl Tracer {
                                 Tracee {
                                     was_in_syscall: false,
                                     tid: child_tid,
-                                    kind: TraceeKind::Unknown {},
+                                    kind: TraceeKind::Fresh {},
                                 },
                             );
                         }
@@ -285,7 +296,7 @@ impl Tracer {
                                 Tracee {
                                     was_in_syscall: false,
                                     tid: child_tid,
-                                    kind: TraceeKind::Unknown {},
+                                    kind: TraceeKind::Fresh {},
                                 },
                             );
                         }
@@ -299,7 +310,7 @@ impl Tracer {
                                 Tracee {
                                     was_in_syscall: false,
                                     tid: child_tid,
-                                    kind: TraceeKind::ThreadOf { pid: tid },
+                                    kind: TraceeKind::Thread { pid: tid },
                                 },
                             );
                         }
@@ -311,7 +322,8 @@ impl Tracer {
                                     panic!("{tid} exec'd, but we didn't know about that process");
                                 }
                             };
-                            tracee.kind = TraceeKind::Unknown;
+                            // this clear out the uffd, too
+                            tracee.kind = TraceeKind::Fresh;
                             self.tx
                                 .send(MeviEvent::TraceeEvent(tid, TraceePayload::Exec))
                                 .unwrap();
@@ -357,13 +369,14 @@ struct Tracee {
 }
 
 enum TraceeKind {
-    Unknown,
+    // we're not sure yet, we're waiting for ptrace to tell us about it
+    Fresh,
 
-    // we got an uffd for it
+    // it's a process, we got an uffd for it
     Process { heap_range: Range<u64>, uffd: Uffd },
 
-    // it's a thread of something we have an uffd for
-    ThreadOf { pid: TraceeId },
+    // it's a thread of a process we know about
+    Thread { pid: TraceeId },
 }
 
 impl Tracee {
@@ -376,7 +389,7 @@ impl Tracee {
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax;
 
-        if matches!(self.kind, TraceeKind::Unknown) {
+        if matches!(self.kind, TraceeKind::Fresh) {
             match regs.orig_rax as _ {
                 libc::SYS_execve => {
                     // bad idea, we're about to replace all memory mappings anyway
@@ -401,8 +414,8 @@ impl Tracee {
         }
 
         let for_tid = match &self.kind {
-            TraceeKind::ThreadOf { pid } => *pid,
-            TraceeKind::Unknown => self.tid,
+            TraceeKind::Thread { pid } => *pid,
+            TraceeKind::Fresh => self.tid,
             TraceeKind::Process { .. } => self.tid,
         };
 
@@ -931,6 +944,13 @@ impl Tracee {
             }
         }
 
+        // retrieve the cmdline and send it
+        let cmdline = get_cmdline(tid);
+        tx.send(MeviEvent::TraceeEvent(
+            tid,
+            TraceePayload::CmdLineChange { cmdline },
+        ))?;
+
         self.kind = TraceeKind::Process {
             heap_range: ret..ret,
             uffd,
@@ -964,6 +984,14 @@ fn receive_uffd(mut tx: mpsc::SyncSender<MeviEvent>, listener: &UnixListener) ->
         crate::userfault::handle(&mut tx, tid, uffd);
     });
 
-    let uffd = unsafe { Uffd::from_raw_fd(uffd_raw) };
-    uffd
+    unsafe { Uffd::from_raw_fd(uffd_raw) }
+}
+
+fn get_cmdline(tid: TraceeId) -> Vec<String> {
+    std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_owned())
+        .collect()
 }

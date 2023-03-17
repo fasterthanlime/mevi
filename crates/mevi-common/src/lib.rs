@@ -1,4 +1,4 @@
-use std::{fmt, ops::Range, sync::mpsc};
+use std::{fmt, ops::Range};
 
 use humansize::{make_format, BINARY};
 use rangemap::RangeMap;
@@ -61,31 +61,30 @@ pub struct TraceeSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TraceePayload {
-    Map {
-        range: Range<u64>,
-        state: MemState,
-        _guard: MapGuard,
-    },
-    Connected {
-        source: ConnectSource,
-        uffd: u64,
-    },
+    /// Clears all memory mappings
     Exec,
+
+    // Used on mmap, madvise(DONTNEED), page faults
     MemStateChange {
         range: Range<u64>,
         state: MemState,
     },
+
+    // Clears a specific mapping
     Unmap {
         range: Range<u64>,
     },
+
+    // Used on mremap
     Remap {
         old_range: Range<u64>,
         new_range: Range<u64>,
-        _guard: MapGuard,
     },
+
     CmdLineChange {
         cmdline: Vec<String>,
     },
+
     Exit,
 }
 
@@ -94,36 +93,9 @@ pub enum ConnectSource {
     Uds,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MapGuard {
-    #[serde(skip)]
-    _inner: Option<mpsc::Sender<()>>,
-}
-
-// Safety: the non-Sync `mpsc::Sender` inside of `MapGuard` is never accessed.
-unsafe impl Sync for MapGuard {}
-
-impl MapGuard {
-    pub fn new(tx: mpsc::Sender<()>) -> Self {
-        Self { _inner: Some(tx) }
-    }
-}
-
-impl Clone for MapGuard {
-    fn clone(&self) -> Self {
-        Self { _inner: None }
-    }
-}
-
 impl TraceePayload {
     pub fn apply_to_memmap(&self, map: &mut MemMap) {
         match self {
-            TraceePayload::Map { range, state, .. } => {
-                map.insert(range.clone(), *state);
-            }
-            TraceePayload::Connected { .. } => {
-                // do nothing
-            }
             TraceePayload::Exec => {
                 // all the mappings are invalidated on exec
                 map.clear();
@@ -140,7 +112,6 @@ impl TraceePayload {
             TraceePayload::Remap {
                 old_range,
                 new_range,
-                _guard,
             } => {
                 let formatter = make_format(BINARY);
 
