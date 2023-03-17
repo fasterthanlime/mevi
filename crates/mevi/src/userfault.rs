@@ -67,7 +67,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                 return;
             }
             Err(e) => {
-                panic!("uffd.read_event failed: {e}");
+                panic!("uffd.read_event failed: {e:?}");
             }
         };
         tracing::debug!("{tid} got {event:?}");
@@ -99,7 +99,7 @@ fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
                             continue;
                         }
                         _ => {
-                            panic!("{e}");
+                            panic!("while doing zeropage: {e:?}");
                         }
                     }
                 }

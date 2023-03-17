@@ -92,6 +92,7 @@ impl Tracer {
                 | ptrace::Options::PTRACE_O_TRACECLONE
                 | ptrace::Options::PTRACE_O_TRACEFORK
                 | ptrace::Options::PTRACE_O_TRACEVFORK
+                | ptrace::Options::PTRACE_O_TRACEVFORKDONE
                 | ptrace::Options::PTRACE_O_TRACEEXEC
                 | ptrace::Options::PTRACE_O_TRACEEXIT
                 | ptrace::Options::PTRACE_O_EXITKILL,
@@ -236,7 +237,7 @@ impl Tracer {
                                 // the process has exited, we don't care
                                 info!("{pid} exited while we spied");
                             } else {
-                                panic!("while doing setregs: {e}")
+                                panic!("while doing setregs: {e:?}")
                             }
                         }
                     } else {
@@ -250,7 +251,7 @@ impl Tracer {
                                         "{tid} exited while we were spying on its syscalls, that's ok"
                                     );
                                 } else {
-                                    panic!("{tid} ptrace::syscall failed: {e}");
+                                    panic!("{tid} ptrace::syscall failed: {e:?}");
                                 }
                             }
                         }
@@ -282,6 +283,9 @@ impl Tracer {
                                     kind: TraceeKind::Unknown {},
                                 },
                             );
+                        }
+                        libc::PTRACE_EVENT_VFORK_DONE => {
+                            info!("{tid} vfork-doned into {child_tid} (with {sig})");
                         }
                         libc::PTRACE_EVENT_CLONE => {
                             info!("{tid} cloned into {child_tid} (with {sig})");
@@ -382,7 +386,7 @@ impl Tracee {
                                 return Ok(None);
                             }
                         }
-                        panic!("while connecting: {e}");
+                        panic!("while connecting: {e:?}");
                     }
                 }
             }
@@ -612,7 +616,23 @@ impl Tracee {
 
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
         if real_pid != tid {
-            panic!("{tid} is a thread/child of {real_pid}, that should never happen");
+            tracing::error!("{tid} is a thread of {real_pid}, we should already know about it");
+
+            let cmdline = crate::get_cmdline(tid);
+            tracing::error!("{tid} cmdline: {cmdline:?}");
+            tracing::error!(
+                "{tid} stat: {}",
+                std::fs::read_to_string(format!("/proc/{}/stat", tid))?
+            );
+
+            let cmdline = crate::get_cmdline(real_pid);
+            tracing::error!("{real_pid} cmdline: {cmdline:?}");
+            tracing::error!(
+                "{real_pid} stat: {}",
+                std::fs::read_to_string(format!("/proc/{}/stat", real_pid))?
+            );
+
+            panic!("unknown {real_pid} => {tid} relationship");
         }
 
         debug!("allocate staging area");

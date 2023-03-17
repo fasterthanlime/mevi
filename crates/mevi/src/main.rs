@@ -258,7 +258,7 @@ async fn handle_ws(mut payload_rx: broadcast::Receiver<MeviEvent>, mut ws: WebSo
     }
 }
 
-fn get_cmdline(tid: TraceeId) -> Vec<String> {
+pub(crate) fn get_cmdline(tid: TraceeId) -> Vec<String> {
     std::fs::read_to_string(format!("/proc/{}/cmdline", tid.0))
         .unwrap_or_default()
         .split('\0')
