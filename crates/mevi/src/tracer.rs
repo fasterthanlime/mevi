@@ -247,7 +247,8 @@ impl Tracer {
                         other => format!("unknown event {}", other).into(),
                     };
 
-                    info!("{tid} got event {event_name} with sig {sig}");
+                    let ev = ptrace::getevent(pid)?;
+                    info!("{tid} got event {event_name} with sig {sig}, ev = {ev}");
                     ptrace::syscall(pid, None)?;
                 }
                 WaitStatus::Signaled(pid, signal, core_dump) => {
