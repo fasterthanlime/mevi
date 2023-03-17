@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc,
+    time::Duration,
 };
 
 use color_eyre::Result;
@@ -106,13 +107,13 @@ impl Tracer {
     }
 
     fn run(&mut self) -> Result<()> {
-        loop {
+        'main_loop: loop {
             let wait_status = match waitpid(None, None) {
                 Ok(s) => s,
                 Err(e) => {
                     if e == nix::errno::Errno::ECHILD {
-                        info!("no more children, exiting");
-                        std::process::exit(0);
+                        info!("no more children, will exit soon");
+                        break 'main_loop;
                     } else {
                         panic!("waitpid failed: {}", e);
                     }
@@ -294,7 +295,7 @@ impl Tracer {
                             );
                         }
                         libc::PTRACE_EVENT_EXEC => {
-                            info!("{tid} exec'd with sig {sig}, child_tid = {child_tid}");
+                            info!("{tid} exec'd with sig {sig}");
                             let tracee = match self.tracees.get_mut(&tid) {
                                 Some(t) => t,
                                 None => {
@@ -307,7 +308,7 @@ impl Tracer {
                                 .unwrap();
                         }
                         libc::PTRACE_EVENT_EXIT => {
-                            info!("{tid} exited with sig {sig}, child_tid = {child_tid}");
+                            info!("{tid} exited with sig {sig}");
                             let ev = MeviEvent::TraceeEvent(tid, TraceePayload::Exit);
                             self.tx.send(ev).unwrap();
                         }
@@ -332,6 +333,11 @@ impl Tracer {
                 }
             }
         }
+
+        info!("will exit in a few");
+        // not great, but this gives time for the last few mesages to reach the frontend
+        std::thread::sleep(Duration::from_millis(500));
+        std::process::exit(0);
     }
 }
 
