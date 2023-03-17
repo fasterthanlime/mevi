@@ -180,8 +180,8 @@ fn app() -> Html {
         <>
             <div class="top-bar">
                 <span class="brand"><span>{"me"}</span><span class="brand-rest">{"vi"}</span></span>
-                <span class="mem-stats rss"><span class="mem-square"></span><span class="name">{"RSS"}</span>{format!("{}", formatter(total_res))}</span>
-                <span class="mem-stats virt"><span class="mem-square"></span><span class="name">{"VSZ"}</span>{format!("{}", formatter(total_virt))}</span>
+                <span class="mem-stats rss"><span class="mem-square"></span><span class="name">{"Resident set"}</span>{format!("{}", formatter(total_res))}</span>
+                <span class="mem-stats virt"><span class="mem-square"></span><span class="name">{"Virtual set"}</span>{format!("{}", formatter(total_virt))}</span>
                 <span class={ if *live { "live-indicator live" } else { "live-indicator offline" } }>{ if *live { "LIVE" } else { "OFFLINE" } }</span>
 
                 <span class="option">
