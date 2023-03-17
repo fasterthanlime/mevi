@@ -908,10 +908,23 @@ impl Tracee {
             let range = map.address.0..map.address.1;
             info!("{tid} has stuff at {range:x?} with perms {:?}", map.perms);
 
-            uffd.register(
+            if let Err(e) = uffd.register(
                 range.start as _,
                 (range.end.checked_sub(range.start).unwrap()) as _,
-            )?;
+            ) {
+                match e {
+                    userfaultfd::Error::SystemError(e) => {
+                        if e == nix::Error::EBUSY {
+                            // this is fine, we're just trying to register the same range twice
+                            // which is a no-op
+                            tracing::info!("That range was already registered");
+                        } else {
+                            return Err(color_eyre::eyre::eyre!(e).wrap_err("registering range"));
+                        }
+                    }
+                    other => return Err(other.into()),
+                }
+            }
 
             let page_size = nix::unistd::sysconf(SysconfVar::PAGE_SIZE)?.unwrap() as u64;
             let start_idx = (map.address.0 / page_size) as usize;
