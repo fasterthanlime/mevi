@@ -46,7 +46,7 @@ pub(crate) fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: 
                             uffd.wake(addr, page_size as _).unwrap();
                         }
                         libc::EBADF => {
-                            warn!("uffd {} died! (got EBADF)", uffd.as_raw_fd());
+                            warn!("{tid} uffd {} died! (got EBADF)", uffd.as_raw_fd());
                             return;
                         }
                         libc::ENOENT => {

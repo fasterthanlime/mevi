@@ -189,18 +189,23 @@ impl Tracer {
                             }
 
                             match change {
-                                MemoryChange::Map { range, state } => {
+                                MemoryChange::Map { range, mut state } => {
                                     let target = self.tracees.get(&for_tid).unwrap();
                                     match &target.kind {
                                         TraceeKind::Fresh => unreachable!(),
                                         TraceeKind::Process { uffd, .. } => {
-                                            uffd.register(
+                                            if let Err(e) = uffd.register(
                                                 range.start as _,
                                                 (range.end - range.start) as _,
-                                            )?;
+                                            ) {
+                                                tracing::warn!(
+                                                    "failed to register {range:?} with uffd: {e:?}"
+                                                );
+                                                state = MemState::Untracked;
+                                            }
                                         }
-                                        TraceeKind::Thread { .. } => {
-                                            panic!("thread of a process should not be able to map memory");
+                                        TraceeKind::Thread { pid } => {
+                                            panic!("thread {for_tid} of process {pid} mapping memory should show up in the parent");
                                         }
                                     }
 
@@ -280,14 +285,9 @@ impl Tracer {
                     match event {
                         libc::PTRACE_EVENT_FORK => {
                             info!("{tid} forked into {child_tid} (with {sig})");
-                            self.tracees.insert(
-                                child_tid,
-                                Tracee {
-                                    was_in_syscall: false,
-                                    tid: child_tid,
-                                    kind: TraceeKind::Fresh {},
-                                },
-                            );
+                            // don't replace whatever we have in `self.tracees`,
+                            // sometimes we get that event AFTER getting some
+                            // sys_enter/sys_exit from the child
                         }
                         libc::PTRACE_EVENT_VFORK => {
                             info!("{tid} vforked into {child_tid} (with {sig})");
@@ -305,14 +305,32 @@ impl Tracer {
                         }
                         libc::PTRACE_EVENT_CLONE => {
                             info!("{tid} cloned into {child_tid} (with {sig})");
-                            self.tracees.insert(
-                                child_tid,
-                                Tracee {
-                                    was_in_syscall: false,
-                                    tid: child_tid,
-                                    kind: TraceeKind::Thread { pid: tid },
-                                },
-                            );
+                            let tracee = match self.tracees.get(&tid) {
+                                Some(t) => t,
+                                None => {
+                                    panic!("{tid} cloned, but we didn't know about that process");
+                                }
+                            };
+                            if let TraceeKind::Thread { pid } = &tracee.kind {
+                                info!("{tid} is a thread of {pid}, so it made a sibling!");
+                                self.tracees.insert(
+                                    child_tid,
+                                    Tracee {
+                                        was_in_syscall: false,
+                                        tid: child_tid,
+                                        kind: TraceeKind::Thread { pid: *pid },
+                                    },
+                                );
+                            } else {
+                                self.tracees.insert(
+                                    child_tid,
+                                    Tracee {
+                                        was_in_syscall: false,
+                                        tid: child_tid,
+                                        kind: TraceeKind::Thread { pid: tid },
+                                    },
+                                );
+                            }
                         }
                         libc::PTRACE_EVENT_EXEC => {
                             info!("{tid} exec'd with sig {sig}");
@@ -415,7 +433,10 @@ impl Tracee {
 
         let for_tid = match &self.kind {
             TraceeKind::Thread { pid } => *pid,
-            TraceeKind::Fresh => self.tid,
+            TraceeKind::Fresh => {
+                // nevermind then
+                return Ok(None);
+            }
             TraceeKind::Process { .. } => self.tid,
         };
 
@@ -490,6 +511,14 @@ impl Tracee {
                         "{} thread of {for_tid} just did munmap {range:x?} addr={addr:x?} len={len}",
                         self.tid
                     );
+                }
+
+                if addr == 0 || len == 0 {
+                    tracing::warn!(
+                        "{} thread of {for_tid} suspiciously just did munmap {range:x?} addr={addr:x?} len={len}",
+                        self.tid
+                    );
+                    return Ok(None);
                 }
 
                 return Ok(Some(MemoryEvent {
@@ -642,7 +671,9 @@ impl Tracee {
 
         let real_pid = TraceeId(invoke(libc::SYS_getpid, &[])?);
         if real_pid != tid {
-            tracing::warn!("{tid} is a thread of {real_pid}, waiting for ptrace to tell us about it (connecting on syscall {})", saved_regs.orig_rax);
+            tracing::info!("{tid} is a thread of {real_pid}, not connecting");
+            self.kind = TraceeKind::Thread { pid: real_pid };
+
             ptrace::setregs(pid, saved_regs)?;
             return Ok(());
         }
@@ -959,6 +990,7 @@ impl Tracee {
 
         // retrieve the cmdline and send it
         let cmdline = get_cmdline(tid);
+        tracing::info!("{tid} has cmdline {cmdline:?}");
         tx.send(MeviEvent::TraceeEvent(
             tid,
             TraceePayload::CmdLineChange { cmdline },

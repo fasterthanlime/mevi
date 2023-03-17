@@ -8,7 +8,8 @@ use axum::{
     response::IntoResponse,
 };
 use color_eyre::Result;
-use mevi_common::{MemMap, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
+use humansize::{make_format, BINARY};
+use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
 use postage::{broadcast, sink::Sink, stream::Stream};
 use tokio::time::Instant;
 use tracer::Tracer;
@@ -105,6 +106,25 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
 
         match payload {
             TraceePayload::Exit => {
+                if let Some(tracee) = tracees.get(&tid) {
+                    let mut total_vsz = 0;
+                    let mut total_rss = 0;
+                    for (range, state) in tracee.map.iter() {
+                        let size = range.end - range.start;
+                        total_vsz += size;
+                        if let MemState::Resident = state {
+                            total_rss += size;
+                        }
+                    }
+                    let formatter = make_format(BINARY);
+                    tracing::warn!(
+                        "{tid} exiting with {} vsz, {} rss, cmdline was {:?}",
+                        formatter(total_vsz),
+                        formatter(total_rss),
+                        tracee.cmdline,
+                    );
+                }
+
                 tracees.remove(&tid);
             }
             TraceePayload::CmdLineChange { cmdline } => {
