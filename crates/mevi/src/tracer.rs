@@ -119,11 +119,8 @@ impl Tracer {
                         }
                         Signal::SIGSTOP => {
                             // probably a new thread after clone?
-                            debug!("{tid} is that a new thread? (just got SIGSTOP)");
-                            nix::sys::signal::kill(pid, Signal::SIGCONT)?;
+                            info!("{tid} is that a new thread? (just got SIGSTOP)");
                             ptrace::syscall(pid, None)?;
-                            // ptrace::syscall(pid, Signal::SIGCONT)?;
-                            // ptrace::syscall(pid, Signal::SIGSTOP)?;
                         }
                         _ => {
                             // probably not ptrace stuff, forward the signal?
