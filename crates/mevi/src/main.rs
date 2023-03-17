@@ -19,7 +19,6 @@ use axum::{
 use color_eyre::Result;
 use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
-use owo_colors::OwoColorize;
 use postage::{broadcast, sink::Sink, stream::Stream};
 use tokio::time::Instant;
 use tracing::{debug, warn};
@@ -124,7 +123,7 @@ fn relay(ev_rx: mpsc::Receiver<MeviEvent>, mut payload_tx: broadcast::Sender<Mev
 
     loop {
         let ev = ev_rx.recv().unwrap();
-        debug!("{:?}", ev.blue());
+        debug!("{:?}", ev);
 
         let (tid, payload) = match ev {
             MeviEvent::Snapshot(mut snap_tracees) => {

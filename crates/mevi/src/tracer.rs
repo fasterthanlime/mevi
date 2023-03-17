@@ -17,7 +17,7 @@ use nix::{
     },
     unistd::Pid,
 };
-use owo_colors::OwoColorize;
+use procfs::process::{MMPermissions, MMapPath};
 use tracing::{debug, info, trace, warn};
 use userfaultfd::{raw, FeatureFlags, IoctlFlags};
 
@@ -120,7 +120,7 @@ impl Tracer {
                 }
             };
 
-            tracing::debug!("wait_status: {:?}", wait_status.yellow());
+            tracing::debug!("wait_status: {:?}", wait_status);
             match wait_status {
                 WaitStatus::Stopped(pid, sig) => {
                     let tid: TraceeId = pid.into();
@@ -268,6 +268,50 @@ impl Tracer {
                                     kind: TraceeKind::Unknown {},
                                 },
                             );
+
+                            let p = procfs::process::Process::new(child_tid.0 as _)?;
+                            let maps = p.maps()?;
+                            for map in maps {
+                                if !map.perms.contains(
+                                    MMPermissions::READ
+                                        | MMPermissions::WRITE
+                                        | MMPermissions::PRIVATE,
+                                ) {
+                                    // we only want RW+PRIVATE, although we're
+                                    // probably losing out on some regions if
+                                    // they're mprotected as RW later?
+                                    continue;
+                                }
+
+                                if map.perms.contains(MMPermissions::SHARED) {
+                                    // nope
+                                    continue;
+                                }
+
+                                match &map.pathname {
+                                    MMapPath::Heap | MMapPath::Anonymous => {
+                                        // yes, good
+                                    }
+                                    MMapPath::Path(_)
+                                    | MMapPath::Stack
+                                    | MMapPath::TStack(_)
+                                    | MMapPath::Vdso
+                                    | MMapPath::Vvar
+                                    | MMapPath::Vsyscall
+                                    | MMapPath::Rollup
+                                    | MMapPath::Vsys(_)
+                                    | MMapPath::Other(_) => {
+                                        // no thank you
+                                        continue;
+                                    }
+                                }
+
+                                let range = map.address.0..map.address.1;
+                                info!(
+                                    "{child_tid} has stuff at {range:x?} with perms {:?}",
+                                    map.perms
+                                );
+                            }
                         }
                         libc::PTRACE_EVENT_VFORK => {
                             info!("{tid} vforked into {child_tid} (with {sig})");
