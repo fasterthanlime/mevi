@@ -1,56 +1,12 @@
-use std::{
-    io::Read,
-    os::{
-        fd::{AsRawFd, FromRawFd},
-        unix::net::UnixListener,
-    },
-    sync::mpsc,
-};
+use std::{os::fd::AsRawFd, sync::mpsc};
 
 use humansize::{make_format, BINARY};
-use mevi_common::{ConnectSource, MemState, MeviEvent, TraceeId, TraceePayload};
+use mevi_common::{MemState, MeviEvent, TraceeId, TraceePayload};
 use nix::unistd::{sysconf, SysconfVar};
-use passfd::FdPassingExt;
 use tracing::{debug, warn};
 use userfaultfd::Uffd;
 
-pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) {
-    loop {
-        let (mut stream, addr) = listener.accept().unwrap();
-        debug!("accepted unix stream from {addr:?}!");
-
-        // TODO: SO_PEERCRED can be used here instead of sending the PID in-band
-        // https://stackoverflow.com/questions/8104904/identify-program-that-connects-to-a-unix-domain-socket
-        //
-        // but it's also a huge PITA, and this isn't security-sensitive, so.
-        let mut pid_bytes = [0u8; 8];
-        stream.read_exact(&mut pid_bytes).unwrap();
-
-        let tid = TraceeId(u64::from_le_bytes(pid_bytes));
-
-        let uffd = unsafe { Uffd::from_raw_fd(stream.recv_fd().unwrap()) };
-        debug!("{tid} received uffd {}", uffd.as_raw_fd());
-
-        tx.send(MeviEvent::TraceeEvent(
-            tid,
-            TraceePayload::Connected {
-                source: ConnectSource::Uds,
-                uffd: uffd.as_raw_fd() as _,
-            },
-        ))
-        .unwrap();
-
-        std::thread::spawn({
-            let mut tx = tx.clone();
-            move || {
-                handle(&mut tx, tid, uffd);
-                tx.send(MeviEvent::TraceeEvent(tid, TraceePayload::Exit))
-            }
-        });
-    }
-}
-
-fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
+pub(crate) fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: Uffd) {
     let page_size = sysconf(SysconfVar::PAGE_SIZE).unwrap().unwrap() as u64;
 
     let send_ev = |payload: TraceePayload| {

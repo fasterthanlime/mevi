@@ -1,5 +1,13 @@
 use std::{
-    collections::HashMap, ops::Range, os::unix::process::CommandExt, process::Command, sync::mpsc,
+    collections::HashMap,
+    io::Read,
+    ops::Range,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{net::UnixListener, process::CommandExt},
+    },
+    process::Command,
+    sync::{mpsc, Arc},
     time::Duration,
 };
 
@@ -17,18 +25,10 @@ use nix::{
     },
     unistd::{Pid, SysconfVar},
 };
-use procfs::process::{MMPermissions, MMapPath};
+use passfd::FdPassingExt;
+use procfs::process::{MMPermissions, MMapPath, MemoryPageFlags, PageInfo};
 use tracing::{debug, info, trace, warn};
-use userfaultfd::{raw, FeatureFlags, IoctlFlags};
-
-pub(crate) fn run(tx: mpsc::SyncSender<MeviEvent>) {
-    Tracer::new(tx).unwrap().run().unwrap();
-}
-
-struct Tracer {
-    tx: mpsc::SyncSender<MeviEvent>,
-    tracees: HashMap<TraceeId, Tracee>,
-}
+use userfaultfd::{raw, FeatureFlags, IoctlFlags, Uffd};
 
 struct MemoryEvent {
     for_tid: TraceeId,
@@ -52,8 +52,14 @@ enum MemoryChange {
     },
 }
 
+pub(crate) struct Tracer {
+    listener: Arc<UnixListener>,
+    tx: mpsc::SyncSender<MeviEvent>,
+    tracees: HashMap<TraceeId, Tracee>,
+}
+
 impl Tracer {
-    fn new(tx: mpsc::SyncSender<MeviEvent>) -> Result<Self> {
+    pub(crate) fn new(tx: mpsc::SyncSender<MeviEvent>, listener: UnixListener) -> Result<Self> {
         // set ourselves as the child subreaper
         let errno = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
         if errno < 0 {
@@ -103,10 +109,11 @@ impl Tracer {
         Ok(Self {
             tx,
             tracees: Default::default(),
+            listener: Arc::new(listener),
         })
     }
 
-    fn run(&mut self) -> Result<()> {
+    pub(crate) fn run(&mut self) -> Result<()> {
         'main_loop: loop {
             let wait_status = match waitpid(None, None) {
                 Ok(s) => s,
@@ -171,7 +178,9 @@ impl Tracer {
                     if tracee.was_in_syscall {
                         tracee.was_in_syscall = false;
 
-                        if let Some(MemoryEvent { for_tid, change }) = tracee.on_sys_exit()? {
+                        if let Some(MemoryEvent { for_tid, change }) =
+                            tracee.on_sys_exit(&self.tx, &self.listener)?
+                        {
                             if matches!(tracee.kind, TraceeKind::Unknown) {
                                 warn!(
                                     "{} unknown tracee kind, and Mapped, assuming process",
@@ -268,64 +277,6 @@ impl Tracer {
                                     kind: TraceeKind::Unknown {},
                                 },
                             );
-
-                            let p = procfs::process::Process::new(child_tid.0 as _)?;
-                            let maps = p.maps()?;
-                            for map in maps {
-                                if !map.perms.contains(
-                                    MMPermissions::READ
-                                        | MMPermissions::WRITE
-                                        | MMPermissions::PRIVATE,
-                                ) {
-                                    // we only want RW+PRIVATE, although we're
-                                    // probably losing out on some regions if
-                                    // they're mprotected as RW later?
-                                    continue;
-                                }
-
-                                if map.perms.contains(MMPermissions::SHARED) {
-                                    // nope
-                                    continue;
-                                }
-
-                                match &map.pathname {
-                                    MMapPath::Heap | MMapPath::Anonymous => {
-                                        // yes, good
-                                    }
-                                    MMapPath::Path(_)
-                                    | MMapPath::Stack
-                                    | MMapPath::TStack(_)
-                                    | MMapPath::Vdso
-                                    | MMapPath::Vvar
-                                    | MMapPath::Vsyscall
-                                    | MMapPath::Rollup
-                                    | MMapPath::Vsys(_)
-                                    | MMapPath::Other(_) => {
-                                        // no thank you
-                                        continue;
-                                    }
-                                }
-
-                                let range = map.address.0..map.address.1;
-                                info!(
-                                    "{child_tid} has stuff at {range:x?} with perms {:?}",
-                                    map.perms
-                                );
-
-                                let page_size =
-                                    nix::unistd::sysconf(SysconfVar::PAGE_SIZE)?.unwrap() as u64;
-                                let start_idx = (map.address.0 / page_size) as usize;
-                                let end_idx = (map.address.1 / page_size) as usize;
-                                let mut pm = p.pagemap()?;
-                                for (rel_idx, pi) in pm
-                                    .get_range_info(start_idx..end_idx)?
-                                    .into_iter()
-                                    .enumerate()
-                                {
-                                    let addr = map.address.0 + rel_idx as u64 * page_size;
-                                    info!("{child_tid} {addr:x?} = {pi:?}",);
-                                }
-                            }
                         }
                         libc::PTRACE_EVENT_VFORK => {
                             info!("{tid} vforked into {child_tid} (with {sig})");
@@ -409,14 +360,18 @@ enum TraceeKind {
     Unknown,
 
     // we got an uffd for it
-    Process { heap_range: Range<u64> },
+    Process { heap_range: Range<u64>, uffd: Uffd },
 
     // it's a thread of something we have an uffd for
     ThreadOf { pid: TraceeId },
 }
 
 impl Tracee {
-    fn on_sys_exit(&mut self) -> Result<Option<MemoryEvent>> {
+    fn on_sys_exit(
+        &mut self,
+        tx: &mpsc::SyncSender<MeviEvent>,
+        listener: &Arc<UnixListener>,
+    ) -> Result<Option<MemoryEvent>> {
         let regs = ptrace::getregs(self.tid.into())?;
         trace!("on sys_exit: {regs:?}");
         let ret = regs.rax;
@@ -428,7 +383,7 @@ impl Tracee {
                 }
                 syscall_nr => {
                     info!("{} connecting out of syscall nr. {syscall_nr}", self.tid);
-                    if let Err(e) = self.connect(regs) {
+                    if let Err(e) = self.connect(regs, tx, listener) {
                         if let Some(nix_err) = e.downcast_ref::<nix::Error>() {
                             if nix_err == &nix::Error::ESRCH {
                                 // the process has exited, we don't care
@@ -557,7 +512,7 @@ impl Tracee {
             libc::SYS_brk => {
                 // FIXME: calling brk from a thread should mutate the heap of
                 // the whole process
-                if let TraceeKind::Process { heap_range } = &mut self.kind {
+                if let TraceeKind::Process { heap_range, .. } = &mut self.kind {
                     if regs.rdi == 0 {
                         // just a query: ignore
                     } else {
@@ -603,7 +558,12 @@ impl Tracee {
     /// `staging_area` is area that was _just_ mmap'd, and that we can write
     /// to, so we can pass pointers-to-structs to the kernel
     #[allow(clippy::useless_transmute)]
-    fn connect(&mut self, saved_regs: user_regs_struct) -> Result<()> {
+    fn connect(
+        &mut self,
+        saved_regs: user_regs_struct,
+        tx: &mpsc::SyncSender<MeviEvent>,
+        listener: &Arc<UnixListener>,
+    ) -> Result<()> {
         let tid = self.tid;
         let pid: Pid = self.tid.into();
 
@@ -783,6 +743,12 @@ impl Tracee {
             std::mem::size_of_val(&addr_un),
         )?;
 
+        let accept_jh = std::thread::spawn({
+            let tx = tx.clone();
+            let listener = Arc::clone(listener);
+            move || receive_uffd(tx, &listener)
+        });
+
         let ret = invoke(
             libc::SYS_connect,
             &[sock_fd as _, staging_area as _, addr_len as _],
@@ -873,14 +839,9 @@ impl Tracee {
         let ret = invoke(libc::SYS_close, &[sock_fd as _])?;
         debug!("close(sock_fd) returned {ret}");
 
-        // now close the uffd
+        // now close the uffd from the child
         let ret = invoke(libc::SYS_close, &[raw_uffd as _])?;
         debug!("close(uffd) returned {ret}");
-
-        // TODO: we should probably keep a copy of the uffd for ourselves,
-        // right? we know exactly when processes will connect to it, and it'd
-        // be really neat to register ranges _while the process is paused_ as
-        // opposed to some other time when the main thread finally gets to it.
 
         // now free the staging area
         let ret = invoke(libc::SYS_munmap, &[staging_area as _, 0x1000])?;
@@ -891,11 +852,118 @@ impl Tracee {
         let ret = invoke(libc::SYS_brk, &[0])?;
         debug!("brk(0) returned {ret}");
 
+        // at this point we should've received the uffd from the other thread.
+        let uffd = accept_jh.join().unwrap();
+
+        // now's a good time to register all the ranges that are R+W, private and anonymous.
+        let p = procfs::process::Process::new(tid.0 as _)?;
+        let maps = p.maps()?;
+        for map in maps {
+            if !map
+                .perms
+                .contains(MMPermissions::READ | MMPermissions::WRITE | MMPermissions::PRIVATE)
+            {
+                // we only want RW+PRIVATE, although we're
+                // probably losing out on some regions if
+                // they're mprotected as RW later?
+                continue;
+            }
+
+            if map.perms.contains(MMPermissions::SHARED) {
+                // nope
+                continue;
+            }
+
+            match &map.pathname {
+                MMapPath::Heap | MMapPath::Anonymous => {
+                    // yes, good
+                }
+                MMapPath::Path(_)
+                | MMapPath::Stack
+                | MMapPath::TStack(_)
+                | MMapPath::Vdso
+                | MMapPath::Vvar
+                | MMapPath::Vsyscall
+                | MMapPath::Rollup
+                | MMapPath::Vsys(_)
+                | MMapPath::Other(_) => {
+                    // no thank you
+                    continue;
+                }
+            }
+
+            let range = map.address.0..map.address.1;
+            info!("{tid} has stuff at {range:x?} with perms {:?}", map.perms);
+
+            uffd.register(
+                range.start as _,
+                (range.end.checked_sub(range.start).unwrap()) as _,
+            )?;
+
+            let page_size = nix::unistd::sysconf(SysconfVar::PAGE_SIZE)?.unwrap() as u64;
+            let start_idx = (map.address.0 / page_size) as usize;
+            let end_idx = (map.address.1 / page_size) as usize;
+            let mut pm = p.pagemap()?;
+            for (rel_idx, pi) in pm
+                .get_range_info(start_idx..end_idx)?
+                .into_iter()
+                .enumerate()
+            {
+                let addr = map.address.0 + rel_idx as u64 * page_size;
+                if let PageInfo::MemoryPage(mp) = pi {
+                    info!("{tid} {addr:x?} = {pi:?}",);
+
+                    // TODO: we can do a lot fewer events here by coalescing those
+                    // ranges but let's worry about that later
+                    tx.send(MeviEvent::TraceeEvent(
+                        tid,
+                        TraceePayload::MemStateChange {
+                            range: addr..addr + page_size,
+                            state: if mp.contains(MemoryPageFlags::PRESENT) {
+                                MemState::Resident
+                            } else {
+                                MemState::NotResident
+                            },
+                        },
+                    ))
+                    .unwrap();
+                }
+            }
+        }
+
         self.kind = TraceeKind::Process {
             heap_range: ret..ret,
+            uffd,
         };
         ptrace::setregs(pid, saved_regs)?;
 
         Ok(())
     }
+}
+
+fn receive_uffd(mut tx: mpsc::SyncSender<MeviEvent>, listener: &UnixListener) -> Uffd {
+    let (mut stream, addr) = listener.accept().unwrap();
+    debug!("accepted unix stream from {addr:?}!");
+
+    // TODO: SO_PEERCRED can be used here instead of sending the PID in-band
+    // https://stackoverflow.com/questions/8104904/identify-program-that-connects-to-a-unix-domain-socket
+    //
+    // but it's also a huge PITA, and this isn't security-sensitive, so.
+    let mut pid_bytes = [0u8; 8];
+    stream.read_exact(&mut pid_bytes).unwrap();
+
+    let tid = TraceeId(u64::from_le_bytes(pid_bytes));
+
+    let uffd_raw = stream.recv_fd().unwrap();
+    drop(stream);
+
+    let uffd = unsafe { Uffd::from_raw_fd(uffd_raw) };
+    debug!("{tid} sent us uffd {}", uffd.as_raw_fd());
+
+    std::thread::spawn(move || {
+        crate::userfault::handle(&mut tx, tid, uffd);
+    });
+
+    let uffd = unsafe { Uffd::from_raw_fd(uffd_raw) };
+    uffd
 }

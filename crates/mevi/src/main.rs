@@ -21,6 +21,7 @@ use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
 use postage::{broadcast, sink::Sink, stream::Stream};
 use tokio::time::Instant;
+use tracer::Tracer;
 use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 use userfaultfd::Uffd;
@@ -46,16 +47,14 @@ async fn main() -> Result<()> {
 
     let (tx, rx) = mpsc::sync_channel::<MeviEvent>(16);
     let tx2 = tx.clone();
-    let tx3 = tx.clone();
 
-    std::thread::spawn(move || userfault::run(tx, listener));
-    std::thread::spawn(move || tracer::run(tx2));
+    std::thread::spawn(move || Tracer::new(tx2, listener).unwrap().run().unwrap());
 
     let (payload_tx, _) = broadcast::channel(16);
 
     let rs = RouterState {
         payload_tx: payload_tx.clone(),
-        ev_tx: tx3.clone(),
+        ev_tx: tx.clone(),
     };
     let router = axum::Router::new()
         .route("/stream", axum::routing::get(stream))
