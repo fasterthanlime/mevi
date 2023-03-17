@@ -459,7 +459,8 @@ impl Tracee {
                 if fd == -1
                     && addr_in == 0
                     && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
-                    && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
+                    // && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
+                    && map_flags.contains(MapFlags::MAP_ANONYMOUS)
                 {
                     let start = ret;
                     if let Some(end) = ret.checked_add(len) {
@@ -732,7 +733,9 @@ impl Tracee {
         let req_features = FeatureFlags::EVENT_REMAP
             | FeatureFlags::EVENT_REMOVE
             | FeatureFlags::EVENT_UNMAP
-            | FeatureFlags::THREAD_ID;
+            | FeatureFlags::THREAD_ID
+            // TODO: this is experimental, figure out if how to do accounting there
+            | FeatureFlags::MISSING_SHMEM;
         let mut api = raw::uffdio_api {
             api: raw::UFFD_API,
             features: req_features.bits(),
@@ -926,27 +929,35 @@ impl Tracee {
 
         let maps = p.maps()?;
         for map in maps {
-            if !map
-                .perms
-                .contains(MMPermissions::READ | MMPermissions::WRITE | MMPermissions::PRIVATE)
-            {
+            if !map.perms.contains(
+                MMPermissions::READ | MMPermissions::WRITE, /* | MMPermissions::PRIVATE */
+            ) {
                 // we only want RW+PRIVATE, although we're
                 // probably losing out on some regions if
                 // they're mprotected as RW later?
                 continue;
             }
 
-            if map.perms.contains(MMPermissions::SHARED) {
-                // nope
-                continue;
-            }
+            // if map.perms.contains(MMPermissions::SHARED) {
+            //     // nope
+            //     continue;
+            // }
 
             match &map.pathname {
                 MMapPath::Heap | MMapPath::Anonymous => {
                     // yes, good
                 }
-                MMapPath::Path(_)
-                | MMapPath::Stack
+                MMapPath::Path(p) => {
+                    // continue only if it does not start with /dev/shm
+                    if !p.starts_with("/dev/shm") {
+                        info!(
+                            "{tid} skipping over pathname {:?} with dev {:?}",
+                            map.pathname, map.dev
+                        );
+                        continue;
+                    }
+                }
+                MMapPath::Stack
                 | MMapPath::TStack(_)
                 | MMapPath::Vdso
                 | MMapPath::Vvar
@@ -955,6 +966,10 @@ impl Tracee {
                 | MMapPath::Vsys(_)
                 | MMapPath::Other(_) => {
                     // no thank you
+                    info!(
+                        "{tid} skipping over pathname {:?} with dev {:?}",
+                        map.pathname, map.dev
+                    );
                     continue;
                 }
             }
