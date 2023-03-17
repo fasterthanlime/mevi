@@ -4,7 +4,7 @@ _default:
 	just --list
 
 install:
-	cargo install --path crates/mevi
+	cargo install --locked --path crates/mevi
 
 serve:
 	trunk serve --release crates/mevi-frontend/index.html

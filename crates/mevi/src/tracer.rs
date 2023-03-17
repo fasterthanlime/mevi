@@ -84,6 +84,7 @@ impl Tracer {
                 | ptrace::Options::PTRACE_O_TRACEFORK
                 | ptrace::Options::PTRACE_O_TRACEVFORK
                 | ptrace::Options::PTRACE_O_TRACEEXEC
+                | ptrace::Options::PTRACE_O_TRACEEXIT
                 | ptrace::Options::PTRACE_O_EXITKILL,
         )?;
         ptrace::syscall(pid, None)?;
@@ -296,6 +297,11 @@ impl Tracer {
                             self.tx
                                 .send(MeviEvent::TraceeEvent(tid, TraceePayload::Exec))
                                 .unwrap();
+                        }
+                        libc::PTRACE_EVENT_EXIT => {
+                            info!("{tid} exited with sig {sig}, child_tid = {child_tid}");
+                            let ev = MeviEvent::TraceeEvent(tid, TraceePayload::Exit);
+                            self.tx.send(ev).unwrap();
                         }
                         _ => {
                             info!(
