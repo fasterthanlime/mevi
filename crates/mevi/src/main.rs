@@ -151,9 +151,14 @@ async fn stream(State(rs): State<RouterState>, upgrade: WebSocketUpgrade) -> imp
     })
 }
 
+lazy_static::lazy_static! {
+    static ref MEVI_INTERVAL: Duration = Duration::from_millis(
+        std::env::var("MEVI_INTERVAL").unwrap_or_else(|_| "32".to_string()).parse().unwrap()
+    );
+}
+
 async fn handle_ws(mut payload_rx: broadcast::Receiver<MeviEvent>, mut ws: WebSocket) {
-    // let interval = Duration::from_millis(16);
-    let interval = Duration::from_millis(32);
+    let interval = *MEVI_INTERVAL;
     let mut next_flush = Instant::now() + interval;
     let mut queue = vec![];
 
