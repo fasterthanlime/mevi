@@ -3,7 +3,7 @@
 
 A memory visualizer for Linux 5.7+
 
-Made for this video: (FILL ME)
+Made for this video: https://www.youtube.com/watch?v=DpnXaNkM9_M
 
 ## Prerequisite
 
