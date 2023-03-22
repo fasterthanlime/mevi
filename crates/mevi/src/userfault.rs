@@ -39,8 +39,8 @@ pub(crate) fn handle(tx: &mut mpsc::SyncSender<MeviEvent>, tid: TraceeId, uffd: 
                     match errno as i32 {
                         libc::EAGAIN => {
                             // retrying often doesn't work, BUT this means the
-                            // thread wasn't awoken, so we need to do it by
-                            // hand.  worst case scenario we get another event
+                            // thread wasn't awakened, so we need to do it by
+                            // hand. worst case scenario, we get another event
                             // from the same range.
                             debug!("zeropage({addr:p}, {page_size:x?}) = EAGAIN, breaking");
                             uffd.wake(addr, page_size as _).unwrap();
