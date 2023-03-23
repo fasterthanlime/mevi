@@ -33,7 +33,14 @@ $ just install
 (Or, without [just](https://github.com/casey/just), look into the `Justfile` for
 the cargo invocation)
 
-Build & serve the frontend (you'll need [trunk](https://trunkrs.dev/)):
+To build & serve the frontend, you'll need to install support for the wasm
+target via rustup:
+
+```shell
+$ rustup target add wasm32-unknown-unknown
+```
+
+And to have [trunk](https://trunkrs.dev/) installed.
 
 ```shell
 $ just serve
