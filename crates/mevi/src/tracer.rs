@@ -458,7 +458,11 @@ impl Tracee {
 
                 if fd == -1
                     && addr_in == 0
-                    && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+                    // Newly created heap (alloc_new_heap) is created by glibc without any protection flags
+                    // and they are adjusted by `mprotect` once the `mmap` succeeds:
+                    // https://github.com/bminor/glibc/blob/master/malloc/arena.c#L404-L441
+                    // && prot_flags.contains(ProtFlags::PROT_READ | ProtFlags::PROT_WRITE)
+                    //
                     // && map_flags.contains(MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS)
                     && map_flags.contains(MapFlags::MAP_ANONYMOUS)
                 {
