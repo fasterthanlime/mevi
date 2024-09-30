@@ -12,14 +12,25 @@ use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
 use postage::{broadcast, sink::Sink, stream::Stream};
 use tokio::time::Instant;
-use tracer::Tracer;
 use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
-mod tracer;
-mod userfault;
+use mevi_driver::Driver;
+use mevi_driver_ptrace_uffd::PtraceUffdDriver;
 
 const SOCK_PATH: &str = "/tmp/mevi.sock";
+const DRIVER_ENV_NAME: &str = "MEVI_DRIVER";
+
+fn get_driver() -> Box<dyn Driver> {
+    if let Some(driver_name) = std::env::var(DRIVER_ENV_NAME).ok() {
+        return match driver_name.as_ref() {
+            "ptrace-uffd" => Box::new(PtraceUffdDriver),
+            _ => panic!("invalid driver name: {driver_name:?}"),
+        };
+    }
+
+    Box::new(PtraceUffdDriver)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,7 +49,7 @@ async fn main() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<MeviEvent>(16);
     let tx2 = tx.clone();
 
-    std::thread::spawn(move || Tracer::new(tx2, listener).unwrap().run().unwrap());
+    std::thread::spawn(move || get_driver().build(tx2, listener).unwrap().run().unwrap());
 
     let (payload_tx, _) = broadcast::channel(16);
 

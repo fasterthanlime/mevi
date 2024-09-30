@@ -1,0 +1,8 @@
+[package]
+name = "mevi-driver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+color-eyre = "0.6.2"
+mevi-common = { version = "0.1.0", path = "../mevi-common" }
