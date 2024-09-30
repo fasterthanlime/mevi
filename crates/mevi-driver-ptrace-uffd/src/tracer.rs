@@ -52,7 +52,7 @@ enum MemoryChange {
     },
 }
 
-pub(crate) struct Tracer {
+pub struct Tracer {
     listener: Arc<UnixListener>,
     tx: mpsc::SyncSender<MeviEvent>,
     tracees: HashMap<TraceeId, Tracee>,
@@ -112,8 +112,10 @@ impl Tracer {
             listener: Arc::new(listener),
         })
     }
+}
 
-    pub(crate) fn run(&mut self) -> Result<()> {
+impl mevi_driver::Tracer for Tracer {
+    fn run(&mut self) -> Result<()> {
         'main_loop: loop {
             let wait_status = match waitpid(None, None) {
                 Ok(s) => s,
@@ -704,7 +706,7 @@ impl Tracee {
             let num_words = addr_size / WORD_SIZE;
             for i in 0..num_words {
                 let word = unsafe { addr.add(i) };
-                let word = unsafe { *word };
+                let word = unsafe { word.read() };
                 // info!("api word {i}: {:016x}", word);
                 unsafe { ptrace::write(pid, (staging_area + i * WORD_SIZE) as _, word as _)? };
             }
