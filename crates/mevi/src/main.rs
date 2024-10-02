@@ -10,6 +10,7 @@ use axum::{
 use color_eyre::Result;
 use humansize::{make_format, BINARY};
 use mevi_common::{MemMap, MemState, MeviEvent, TraceeId, TraceePayload, TraceeSnapshot};
+use mevi_driver_ebpf::EbpfDriver;
 use postage::{broadcast, sink::Sink, stream::Stream};
 use tokio::time::Instant;
 use tracing::debug;
@@ -25,11 +26,12 @@ fn get_driver() -> Box<dyn Driver> {
     if let Some(driver_name) = std::env::var(DRIVER_ENV_NAME).ok() {
         return match driver_name.as_ref() {
             "ptrace-uffd" => Box::new(PtraceUffdDriver),
+            "ebpf" => Box::new(EbpfDriver),
             _ => panic!("invalid driver name: {driver_name:?}"),
         };
     }
 
-    Box::new(PtraceUffdDriver)
+    Box::new(EbpfDriver) // TODO: Revert to PtraceUffdDriver
 }
 
 #[tokio::main]

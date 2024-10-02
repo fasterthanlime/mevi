@@ -1,0 +1,14 @@
+[package]
+name = "mevi-driver-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+libbpf-cargo = "0.24.5"
+vmlinux = { git = "https://github.com/libbpf/libbpf-rs", tag = "v0.24.5" }
+
+[dependencies]
+color-eyre = "0.6.2"
+libbpf-rs = "0.24.5"
+mevi-common = { version = "0.1.0", path = "../mevi-common" }
+mevi-driver = { version = "0.1.0", path = "../mevi-driver" }

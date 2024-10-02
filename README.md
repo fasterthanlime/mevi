@@ -22,6 +22,14 @@ basic stuff like `cat /hosts` will fail with EFAULT without it, so, I'm not
 making it easy to go that route - if you _really_ know what you're doing you can
 figure out where to pass the "user faults only" flag.
 
+## System Dependencies
+
+Since the `mevi` binary has an eBPF driver to, there is a need to compile some
+C code to eBPF bytecode. These dependencies are only needed to compile the
+`mevi-driver-ebpf` crate:
+
+  - Clang >= 18
+
 ## Usage
 
 Install the `mevi` executable:
