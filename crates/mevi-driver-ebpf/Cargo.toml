@@ -12,3 +12,7 @@ color-eyre = "0.6.2"
 libbpf-rs = "0.24.5"
 mevi-common = { version = "0.1.0", path = "../mevi-common" }
 mevi-driver = { version = "0.1.0", path = "../mevi-driver" }
+nix.workspace = true
+libc = "0.2.139"
+bytemuck = { version = "1.18.0", features = ["derive"] }
+tracing = "0.1.37"

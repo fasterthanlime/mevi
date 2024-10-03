@@ -1,0 +1,14 @@
+{
+    "files.associations": {
+        "compare": "c",
+        "type_traits": "c",
+        "utility": "c",
+        "typeinfo": "cpp",
+        "vmlinux.h": "c",
+        "bpf.h": "c",
+        "bpf_helpers.h": "c",
+        "bpf_tracing.h": "c",
+        "limits": "c",
+        "*.tcc": "c"
+    }
+}

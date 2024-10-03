@@ -8,7 +8,7 @@
 char _license[] SEC("license") = "Dual BSD/GPL";
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, pid_t);
     __type(value, char);
     __uint(max_entries, 1024);
@@ -26,6 +26,49 @@ __always_inline static pid_t getpid(void)
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     return pid_tgid & __UINT32_MAX__;
 }
+
+enum tracee_kind {
+    TRACEE_KIND_MEVI = 0,
+    TRACEE_KIND_PROC = 1,
+};
+
+enum memory_state {
+    MEMORY_STATE_RESIDENT = 1,
+    MEMORY_STATE_NOT_RESIDENT = 2,
+    MEMORY_STATE_UNTRACKED = 3,
+};
+
+struct memory_range {
+    __u64 start;
+    __u64 end;
+};
+
+enum memory_change_kind {
+    MEMORY_CHANGE_KIND_MAP = 1,
+    MEMORY_CHANGE_KIND_REMAP = 2,
+    MEMORY_CHANGE_KIND_UNMAP = 3,
+    MEMORY_CHANGE_KIND_PAGE_OUT = 4,
+};
+
+struct memory_change {
+    enum memory_change_kind kind;
+    union {
+        struct {
+            struct memory_range range;
+            enum memory_state state;
+        } map;
+        struct {
+            struct memory_range old_range;
+            struct memory_range new_range;
+        } remap;
+        struct {
+            struct memory_range range;
+        } unmap;
+        struct {
+            struct memory_range range;
+        } page_out;
+    };
+};
 
 #define ON_EXIT(_Name)                          \
     SEC("tracepoint/syscalls/sys_exit_" #_Name) \

@@ -4,7 +4,9 @@ resolver = "2"
 
 [workspace.dependencies]
 # expose-raw branch
-userfaultfd = { git = "https://github.com/fasterthanlime/userfaultfd-rs", rev = "b7b814d", features = ["linux4_14"] }
+userfaultfd = { git = "https://github.com/fasterthanlime/userfaultfd-rs", rev = "b7b814d", features = [
+    "linux4_14",
+] }
 postcard = { version = "1.0.0", features = ["alloc"] }
 nix = { version = "0.27", features = ["feature", "ptrace", "signal", "mman"] }
 
